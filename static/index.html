@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>LAN Camera Viewer</title>
-<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<!-- No external JS needed — MJPEG streams natively in <img> tags -->
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -113,6 +113,158 @@
   }
 
   .tile:hover .remove-btn { opacity: 1; }
+
+  .tile .quality-btn {
+    position: absolute;
+    bottom: 8px;
+    right: 8px;
+    background: rgba(0,0,0,0.7);
+    border: 1px solid #555;
+    color: #ccc;
+    padding: 3px 8px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 600;
+    opacity: 0;
+    transition: opacity 0.2s;
+    z-index: 10;
+  }
+
+  .tile:hover .quality-btn { opacity: 1; }
+  .tile .quality-btn.hd { color: #4fc3f7; border-color: #4fc3f7; }
+  .tile .quality-btn.switching { opacity: 1; color: #ff9800; border-color: #ff9800; }
+
+  /* --- Greeting overlay --- */
+  .tile .greeting-overlay {
+    position: absolute;
+    bottom: 40px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0,0,0,0.75);
+    border: 1px solid #4caf50;
+    border-radius: 8px;
+    padding: 8px 18px;
+    color: #fff;
+    font-size: 16px;
+    font-weight: 600;
+    white-space: nowrap;
+    z-index: 20;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.4s;
+  }
+
+  .tile .greeting-overlay.visible { opacity: 1; }
+
+  .tile .greeting-overlay .greeting-icon {
+    color: #4caf50;
+    margin-right: 6px;
+  }
+
+  .tile .greeting-overlay .greeting-conf {
+    font-size: 11px;
+    color: #aaa;
+    font-weight: 400;
+    margin-left: 8px;
+  }
+  .tile .greeting-overlay .greeting-new {
+    color: #ffb74d;
+  }
+  .tile .greeting-overlay .outfit-dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-left: 6px;
+    vertical-align: middle;
+    border: 1px solid rgba(255,255,255,0.4);
+  }
+  .outfit-swatch {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    vertical-align: middle;
+    margin-right: 4px;
+    border: 1px solid rgba(255,255,255,0.3);
+  }
+
+  /* --- Floating unknown faces bar --- */
+  .unknown-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: rgba(20,20,20,0.95);
+    border-top: 2px solid #ff9800;
+    padding: 8px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    z-index: 100;
+    overflow-x: auto;
+    transition: transform 0.3s;
+    transform: translateY(100%);
+  }
+  .unknown-bar.visible { transform: translateY(0); }
+  .unknown-bar-label {
+    color: #ff9800;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .unknown-bar-card {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #2a2a2a;
+    border: 1px solid #444;
+    border-radius: 8px;
+    padding: 6px 10px;
+    flex-shrink: 0;
+  }
+  .unknown-bar-card img {
+    width: 48px;
+    height: 48px;
+    border-radius: 6px;
+    object-fit: cover;
+  }
+  .unknown-bar-card input {
+    width: 100px;
+    padding: 4px 8px;
+    border: 1px solid #555;
+    background: #1a1a1a;
+    color: #fff;
+    border-radius: 4px;
+    font-size: 13px;
+  }
+  .unknown-bar-card input:focus { border-color: #4fc3f7; outline: none; }
+  .unknown-bar-card button {
+    padding: 4px 10px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .unknown-bar-card .btn-save {
+    background: #4caf50;
+    color: #fff;
+  }
+  .unknown-bar-card .btn-save:hover { background: #66bb6a; }
+  .unknown-bar-card .btn-ignore {
+    background: #555;
+    color: #ccc;
+  }
+  .unknown-bar-card .btn-ignore:hover { background: #666; }
+  .unknown-bar-countdown {
+    font-size: 10px;
+    color: #999;
+    text-align: center;
+    margin-top: 2px;
+  }
 
   .tile .offline-overlay {
     position: absolute;
@@ -268,6 +420,255 @@
   }
 
   @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* --- Faces Modal (wide) --- */
+  .modal.wide { width: 820px; max-height: 85vh; display: flex; flex-direction: column; }
+  .modal.wide .modal-body { flex: 1; overflow-y: auto; min-height: 0; }
+
+  .face-tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 2px solid #333;
+    margin-bottom: 16px;
+  }
+
+  .face-tabs button {
+    padding: 8px 20px;
+    background: none;
+    border: none;
+    color: #888;
+    font-size: 14px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    transition: all 0.15s;
+  }
+
+  .face-tabs button:hover { color: #ccc; }
+  .face-tabs button.active { color: #4fc3f7; border-bottom-color: #4fc3f7; }
+
+  .face-tab-content { display: none; }
+  .face-tab-content.active { display: block; }
+
+  /* Face grid */
+  .face-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 12px;
+  }
+
+  .face-card {
+    background: #2a2a2a;
+    border-radius: 6px;
+    overflow: hidden;
+    text-align: center;
+  }
+
+  .face-card img {
+    width: 100%;
+    height: 130px;
+    object-fit: cover;
+    display: block;
+    background: #111;
+  }
+
+  .face-card .face-info {
+    padding: 8px;
+  }
+
+  .face-card .face-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: #eee;
+    margin-bottom: 2px;
+  }
+
+  .face-card .face-meta {
+    font-size: 11px;
+    color: #888;
+    margin-bottom: 6px;
+  }
+
+  .face-card input[type="text"] {
+    width: calc(100% - 8px);
+    padding: 4px 6px;
+    margin: 0 auto 6px;
+    border: 1px solid #444;
+    border-radius: 3px;
+    background: #1a1a1a;
+    color: #eee;
+    font-size: 12px;
+    display: block;
+  }
+
+  .face-card .face-actions {
+    display: flex;
+    gap: 4px;
+    padding: 0 4px 8px;
+  }
+
+  .face-card .face-actions button {
+    flex: 1;
+    padding: 4px 0;
+    border: 1px solid #444;
+    border-radius: 3px;
+    font-size: 11px;
+    cursor: pointer;
+    background: #333;
+    color: #ccc;
+    transition: all 0.15s;
+  }
+
+  .face-card .face-actions button.save { background: #2196f3; color: #fff; border-color: #2196f3; }
+  .face-card .face-actions button.ignore { background: #555; }
+  .face-card .face-actions button.delete { background: #c62828; color: #fff; border-color: #c62828; }
+
+  /* Sightings log table */
+  .sightings-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  .sightings-table th {
+    text-align: left;
+    padding: 8px 10px;
+    background: #2a2a2a;
+    color: #aaa;
+    font-weight: 600;
+    border-bottom: 1px solid #444;
+  }
+
+  .sightings-table td {
+    padding: 6px 10px;
+    border-bottom: 1px solid #2a2a2a;
+    vertical-align: middle;
+  }
+
+  .sightings-table img {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    object-fit: cover;
+    vertical-align: middle;
+    margin-right: 6px;
+    background: #111;
+  }
+
+  .face-empty {
+    text-align: center;
+    color: #666;
+    padding: 40px 0;
+    font-size: 14px;
+  }
+
+  .face-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .face-badge.unknown { background: #ff9800; color: #000; }
+  .face-badge.known { background: #4caf50; color: #fff; }
+
+  /* --- Customer detail panel --- */
+  .customer-detail {
+    display: none;
+  }
+  .customer-detail.open {
+    display: block;
+  }
+  .cd-back {
+    background: none;
+    border: none;
+    color: #4fc3f7;
+    font-size: 13px;
+    cursor: pointer;
+    padding: 0 0 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .cd-back:hover { color: #81d4fa; }
+  .cd-header {
+    display: flex;
+    gap: 18px;
+    align-items: flex-start;
+    margin-bottom: 18px;
+  }
+  .cd-avatar {
+    width: 100px;
+    height: 100px;
+    border-radius: 10px;
+    object-fit: cover;
+    background: #111;
+    border: 2px solid #333;
+    flex-shrink: 0;
+  }
+  .cd-info { flex: 1; }
+  .cd-name {
+    font-size: 20px;
+    font-weight: 700;
+    color: #eee;
+    margin-bottom: 6px;
+  }
+  .cd-stats {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 4px;
+  }
+  .cd-stat {
+    font-size: 12px;
+    color: #999;
+  }
+  .cd-stat b {
+    color: #ccc;
+    font-weight: 600;
+  }
+  .cd-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .cd-actions button {
+    padding: 5px 14px;
+    border: 1px solid #444;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    background: #333;
+    color: #ccc;
+    transition: all 0.15s;
+  }
+  .cd-actions button:hover { background: #444; color: #fff; }
+  .cd-actions button.delete { background: #c62828; color: #fff; border-color: #c62828; }
+  .cd-actions button.delete:hover { background: #e53935; }
+  .cd-section-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #aaa;
+    margin-bottom: 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid #333;
+  }
+  .cd-sightings {
+    max-height: 300px;
+    overflow-y: auto;
+  }
+
+  /* --- Tracking canvas overlay --- */
+  .tile canvas.tracking-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 15;
+  }
 </style>
 </head>
 <body>
@@ -281,12 +682,18 @@
   <button onclick="setGrid(3)" id="g3">3x3</button>
   <button onclick="setGrid(4)" id="g4">4x4</button>
 
+  <button onclick="openCustomerModal()">Customers</button>
   <button class="primary" onclick="openAddModal()">+ Add Camera</button>
   <button onclick="openDiscoverModal()">Discover</button>
 </div>
 
 <!-- Camera Grid -->
 <div class="grid g2" id="grid"></div>
+
+<!-- Floating unknown faces bar -->
+<div class="unknown-bar" id="unknownBar">
+  <div class="unknown-bar-label">New Faces:</div>
+</div>
 
 <!-- Add Camera Modal -->
 <div class="modal-overlay" id="addModal">
@@ -322,11 +729,39 @@
   </div>
 </div>
 
+<!-- Customer Management Modal -->
+<div class="modal-overlay" id="customerModal">
+  <div class="modal wide">
+    <h2>Customer Management</h2>
+    <div class="face-tabs">
+      <button class="active" onclick="switchFaceTab('known')">Members</button>
+      <button onclick="switchFaceTab('log')">Activity</button>
+    </div>
+    <div class="modal-body">
+      <!-- List view -->
+      <div id="customerListView">
+        <!-- Known/Members tab -->
+        <div class="face-tab-content active" id="tab-known">
+          <div class="face-grid" id="knownGrid"></div>
+        </div>
+        <!-- Activity Log tab -->
+        <div class="face-tab-content" id="tab-log">
+          <div id="sightingsContainer"></div>
+        </div>
+      </div>
+      <!-- Detail view (hidden by default) -->
+      <div class="customer-detail" id="customerDetail"></div>
+    </div>
+    <div class="actions" style="margin-top:12px">
+      <button onclick="closeCustomerModal()">Close</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const API = '';
 let cameras = [];
 let gridSize = 2;
-let hlsInstances = {};
 let discoveredCameras = [];
 
 // --- Grid ---
@@ -350,15 +785,9 @@ async function loadCameras() {
   renderGrid();
 }
 
-// --- Render grid using safe DOM methods ---
+// --- Render grid ---
 function renderGrid() {
   const grid = document.getElementById('grid');
-
-  // Destroy old HLS instances
-  Object.values(hlsInstances).forEach(function(h) { h.destroy(); });
-  hlsInstances = {};
-
-  // Clear grid
   while (grid.firstChild) grid.removeChild(grid.firstChild);
 
   if (cameras.length === 0) {
@@ -392,63 +821,44 @@ function renderGrid() {
     });
     tile.appendChild(removeBtn);
 
-    // Media element
-    if (cam.type === 'mjpeg') {
-      const img = document.createElement('img');
-      img.src = cam.stream_url;
-      img.alt = cam.name;
-      img.addEventListener('error', function() {
-        this.style.display = 'none';
-        showOffline(cam.id);
+    // Quality toggle button (only for cameras with switchable channels)
+    if (cam.can_switch_quality) {
+      var isHD = cam.quality === 'high';
+      var qBtn = document.createElement('button');
+      qBtn.className = 'quality-btn' + (isHD ? ' hd' : '');
+      qBtn.textContent = isHD ? 'HD' : 'SD';
+      qBtn.title = isHD ? '2560x1440 — Click for SD' : '768x432 — Click for HD';
+      qBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        switchQuality(cam.id, cam.quality);
       });
-      tile.appendChild(img);
-    } else {
-      const video = document.createElement('video');
-      video.id = 'vid-' + cam.id;
-      video.muted = true;
-      video.autoplay = true;
-      video.playsInline = true;
-      tile.appendChild(video);
+      tile.appendChild(qBtn);
     }
+
+    // All cameras use <img> — both RTSP (MJPEG via server) and webcam agents
+    var img = document.createElement('img');
+    img.src = cam.stream_url;
+    img.alt = cam.name;
+    img.addEventListener('error', function() {
+      this.style.display = 'none';
+      showOffline(cam.id);
+    });
+    tile.appendChild(img);
+
+    // Tracking canvas overlay
+    var canvas = document.createElement('canvas');
+    canvas.className = 'tracking-canvas';
+    canvas.id = 'track-' + cam.id;
+    tile.appendChild(canvas);
+
+    // Greeting overlay (hidden by default)
+    var greeting = document.createElement('div');
+    greeting.className = 'greeting-overlay';
+    greeting.id = 'greeting-' + cam.id;
+    tile.appendChild(greeting);
 
     grid.appendChild(tile);
   });
-
-  // Attach HLS players for RTSP cameras
-  cameras.filter(function(c) { return c.type === 'rtsp'; }).forEach(function(cam) {
-    const video = document.getElementById('vid-' + cam.id);
-    if (!video) return;
-    attachHLS(cam, video);
-  });
-}
-
-function attachHLS(cam, video) {
-  const url = cam.stream_url;
-
-  if (Hls.isSupported()) {
-    const hls = new Hls({
-      liveSyncDurationCount: 2,
-      liveMaxLatencyDurationCount: 5,
-      enableWorker: true,
-    });
-    hls.loadSource(url);
-    hls.attachMedia(video);
-    hls.on(Hls.Events.MANIFEST_PARSED, function() { video.play(); });
-    hls.on(Hls.Events.ERROR, function(event, data) {
-      if (data.fatal) {
-        showOffline(cam.id);
-        setTimeout(function() {
-          hls.loadSource(url);
-          hls.attachMedia(video);
-          hideOffline(cam.id);
-        }, 10000);
-      }
-    });
-    hlsInstances[cam.id] = hls;
-  } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-    video.src = url;
-    video.play();
-  }
 }
 
 function showOffline(camId) {
@@ -510,6 +920,35 @@ async function addCamera() {
   }
 }
 
+// --- Switch quality ---
+async function switchQuality(camId, current) {
+  var newQuality = current === 'high' ? 'low' : 'high';
+  var tile = document.getElementById('tile-' + camId);
+  var qBtn = tile ? tile.querySelector('.quality-btn') : null;
+
+  // Visual feedback
+  if (qBtn) {
+    qBtn.textContent = '...';
+    qBtn.className = 'quality-btn switching';
+  }
+
+  try {
+    await fetch(API + '/api/cameras/' + camId + '/quality', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ quality: newQuality }),
+    });
+    // Reload cameras to get new stream URL
+    loadCameras();
+  } catch (e) {
+    alert('Failed to switch quality: ' + e.message);
+    if (qBtn) {
+      qBtn.textContent = current === 'high' ? 'HD' : 'SD';
+      qBtn.className = 'quality-btn' + (current === 'high' ? ' hd' : '');
+    }
+  }
+}
+
 // --- Remove camera ---
 async function removeCam(camId) {
   if (!confirm('Remove this camera?')) return;
@@ -532,7 +971,6 @@ function closeDiscoverModal() {
 
 async function runDiscovery() {
   const container = document.getElementById('discoverResults');
-  // Show loading
   while (container.firstChild) container.removeChild(container.firstChild);
   const loadingP = document.createElement('p');
   const spinner = document.createElement('span');
@@ -564,10 +1002,8 @@ async function runDiscovery() {
       item.className = 'discover-item';
 
       const info = document.createElement('span');
-      const nameText = document.createTextNode(cam.name);
-      info.appendChild(nameText);
-      const br = document.createElement('br');
-      info.appendChild(br);
+      info.appendChild(document.createTextNode(cam.name));
+      info.appendChild(document.createElement('br'));
       const urlSmall = document.createElement('small');
       urlSmall.style.color = '#888';
       urlSmall.textContent = cam.rtsp_url;
@@ -609,28 +1045,969 @@ async function addDiscovered(index) {
   }
 }
 
+// --- Customer Management ---
+let facesRefreshTimer = null;
+
+function openCustomerModal() {
+  document.getElementById('customerModal').classList.add('open');
+  switchFaceTab('known');
+  loadFaces();
+  facesRefreshTimer = setInterval(function() {
+    var logTab = document.getElementById('tab-log');
+    if (logTab && logTab.classList.contains('active')) {
+      loadSightings();
+    }
+    var knownTab = document.getElementById('tab-known');
+    if (knownTab && knownTab.classList.contains('active')) {
+      loadFacesTab('known');
+    }
+  }, 10000);
+}
+
+function closeCustomerModal() {
+  // Reset detail view if open
+  closeCustomerDetail();
+  document.getElementById('customerModal').classList.remove('open');
+  if (facesRefreshTimer) { clearInterval(facesRefreshTimer); facesRefreshTimer = null; }
+}
+
+function switchFaceTab(tab) {
+  document.querySelectorAll('#customerModal .face-tabs button').forEach(function(b) { b.classList.remove('active'); });
+  document.querySelectorAll('#customerModal .face-tab-content').forEach(function(t) { t.classList.remove('active'); });
+
+  var tabNames = ['known', 'log'];
+  var idx = tabNames.indexOf(tab);
+  if (idx >= 0) {
+    document.querySelectorAll('#customerModal .face-tabs button')[idx].classList.add('active');
+  }
+  document.getElementById('tab-' + tab).classList.add('active');
+
+  if (tab === 'known') loadFacesTab('known');
+  else if (tab === 'log') loadSightings();
+}
+
+async function loadFaces() {
+  var activeTab = document.querySelector('#customerModal .face-tab-content.active');
+  if (activeTab) {
+    if (activeTab.id === 'tab-known') loadFacesTab('known');
+    else if (activeTab.id === 'tab-log') loadSightings();
+  }
+}
+
+async function loadFacesTab(status) {
+  var gridId = status === 'unknown' ? 'unknownGrid' : 'knownGrid';
+  var grid = document.getElementById(gridId);
+  if (!grid) return;
+
+  try {
+    var res = await fetch(API + '/api/faces?status=' + status);
+    var faces = await res.json();
+
+    while (grid.firstChild) grid.removeChild(grid.firstChild);
+
+    if (faces.length === 0) {
+      var empty = document.createElement('div');
+      empty.className = 'face-empty';
+      empty.textContent = status === 'unknown'
+        ? 'No unknown faces detected yet. Stand in front of a camera!'
+        : 'No labeled faces yet. Label unknown faces to start tracking.';
+      empty.style.gridColumn = '1 / -1';
+      grid.appendChild(empty);
+      return;
+    }
+
+    faces.forEach(function(face) {
+      var card = document.createElement('div');
+      card.className = 'face-card';
+
+      var img = document.createElement('img');
+      img.src = face.image_url + '?t=' + Date.now();
+      img.alt = face.name || 'Unknown';
+      card.appendChild(img);
+
+      var info = document.createElement('div');
+      info.className = 'face-info';
+
+      if (status === 'unknown') {
+        // Name input
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.placeholder = 'Enter name...';
+        input.id = 'name-' + face.id;
+        input.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter') labelFace(face.id);
+          e.stopPropagation();
+        });
+        input.addEventListener('click', function(e) { e.stopPropagation(); });
+        info.appendChild(input);
+
+        var meta = document.createElement('div');
+        meta.className = 'face-meta';
+        meta.textContent = 'First seen: ' + formatTime(face.first_seen);
+        info.appendChild(meta);
+
+        var actions = document.createElement('div');
+        actions.className = 'face-actions';
+
+        var saveBtn = document.createElement('button');
+        saveBtn.className = 'save';
+        saveBtn.textContent = 'Save';
+        saveBtn.addEventListener('click', function() { labelFace(face.id); });
+        actions.appendChild(saveBtn);
+
+        var ignoreBtn = document.createElement('button');
+        ignoreBtn.className = 'ignore';
+        ignoreBtn.textContent = 'Ignore';
+        ignoreBtn.addEventListener('click', function() { ignoreFace(face.id); });
+        actions.appendChild(ignoreBtn);
+
+        info.appendChild(actions);
+      } else {
+        // Known face — clickable card
+        card.style.cursor = 'pointer';
+        card.addEventListener('click', function() { openCustomerDetail(face); });
+
+        var nameEl = document.createElement('div');
+        nameEl.className = 'face-name';
+        nameEl.textContent = face.name;
+        if (face.outfit_color) {
+          var swatch = document.createElement('span');
+          swatch.className = 'outfit-swatch';
+          swatch.style.background = face.outfit_hex;
+          swatch.title = "Today's outfit: " + face.outfit_color;
+          nameEl.insertBefore(swatch, nameEl.firstChild);
+        }
+        info.appendChild(nameEl);
+
+        var meta = document.createElement('div');
+        meta.className = 'face-meta';
+        var metaText = 'Last seen: ' + formatTime(face.last_seen);
+        if (face.outfit_color) metaText += ' | Outfit: ' + face.outfit_color;
+        meta.textContent = metaText;
+        info.appendChild(meta);
+
+        // Encoding count
+        if (face.encoding_count) {
+          var encMeta = document.createElement('div');
+          encMeta.className = 'face-meta';
+          encMeta.textContent = face.encoding_count + ' face sample' + (face.encoding_count > 1 ? 's' : '');
+          info.appendChild(encMeta);
+        }
+      }
+
+      card.appendChild(info);
+      grid.appendChild(card);
+    });
+  } catch (e) {
+    console.error('Failed to load faces:', e);
+  }
+}
+
+async function loadSightings() {
+  var container = document.getElementById('sightingsContainer');
+  if (!container) return;
+
+  try {
+    var res = await fetch(API + '/api/sightings?limit=50');
+    var sightings = await res.json();
+
+    while (container.firstChild) container.removeChild(container.firstChild);
+
+    if (sightings.length === 0) {
+      var empty = document.createElement('div');
+      empty.className = 'face-empty';
+      empty.textContent = 'No sightings recorded yet.';
+      container.appendChild(empty);
+      return;
+    }
+
+    var table = document.createElement('table');
+    table.className = 'sightings-table';
+
+    var thead = document.createElement('thead');
+    var headRow = document.createElement('tr');
+    ['Person', 'Camera', 'Time', 'Confidence'].forEach(function(h) {
+      var th = document.createElement('th');
+      th.textContent = h;
+      headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    var tbody = document.createElement('tbody');
+    sightings.forEach(function(s) {
+      var tr = document.createElement('tr');
+
+      // Person cell with image
+      var tdPerson = document.createElement('td');
+      if (s.face_image_url) {
+        var faceImg = document.createElement('img');
+        faceImg.src = s.face_image_url;
+        faceImg.alt = s.face_name;
+        tdPerson.appendChild(faceImg);
+      }
+      var nameSpan = document.createElement('span');
+      nameSpan.textContent = s.face_name || 'Unknown';
+      tdPerson.appendChild(nameSpan);
+      tr.appendChild(tdPerson);
+
+      // Camera
+      var tdCam = document.createElement('td');
+      tdCam.textContent = s.camera_id;
+      tr.appendChild(tdCam);
+
+      // Time
+      var tdTime = document.createElement('td');
+      tdTime.textContent = formatTime(s.timestamp);
+      tr.appendChild(tdTime);
+
+      // Confidence
+      var tdConf = document.createElement('td');
+      tdConf.textContent = (s.confidence * 100).toFixed(1) + '%';
+      tr.appendChild(tdConf);
+
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    container.appendChild(table);
+  } catch (e) {
+    console.error('Failed to load sightings:', e);
+  }
+}
+
+// --- Customer Detail View ---
+async function openCustomerDetail(face) {
+  var listView = document.getElementById('customerListView');
+  var detail = document.getElementById('customerDetail');
+  var tabs = document.querySelector('#customerModal .face-tabs');
+  if (!listView || !detail) return;
+
+  listView.style.display = 'none';
+  tabs.style.display = 'none';
+  detail.classList.add('open');
+
+  // Build detail HTML
+  detail.innerHTML = '';
+
+  // Back button
+  var backBtn = document.createElement('button');
+  backBtn.className = 'cd-back';
+  backBtn.innerHTML = '&#8592; Back';
+  backBtn.addEventListener('click', closeCustomerDetail);
+  detail.appendChild(backBtn);
+
+  // Header: avatar + info
+  var header = document.createElement('div');
+  header.className = 'cd-header';
+
+  var avatar = document.createElement('img');
+  avatar.className = 'cd-avatar';
+  avatar.src = face.image_url + '?t=' + Date.now();
+  avatar.alt = face.name;
+  header.appendChild(avatar);
+
+  var infoDiv = document.createElement('div');
+  infoDiv.className = 'cd-info';
+
+  var nameEl = document.createElement('div');
+  nameEl.className = 'cd-name';
+  nameEl.textContent = face.name;
+  infoDiv.appendChild(nameEl);
+
+  var stats = document.createElement('div');
+  stats.className = 'cd-stats';
+
+  var statItems = [
+    { label: 'First seen', value: formatTime(face.first_seen) },
+    { label: 'Last seen', value: formatTime(face.last_seen) },
+    { label: 'Face samples', value: (face.encoding_count || 0) + '' },
+    { label: 'Camera', value: face.camera_id },
+  ];
+  if (face.outfit_color) {
+    statItems.push({ label: 'Outfit', value: face.outfit_color });
+  }
+  statItems.forEach(function(s) {
+    var el = document.createElement('div');
+    el.className = 'cd-stat';
+    el.innerHTML = s.label + ': <b>' + s.value + '</b>';
+    stats.appendChild(el);
+  });
+  infoDiv.appendChild(stats);
+
+  // Actions
+  var actions = document.createElement('div');
+  actions.className = 'cd-actions';
+
+  var renameBtn = document.createElement('button');
+  renameBtn.textContent = 'Rename';
+  renameBtn.addEventListener('click', function() {
+    renameFace(face.id, face.name);
+    // Refresh detail after rename
+    setTimeout(async function() {
+      var res = await fetch(API + '/api/faces?status=known');
+      var faces = await res.json();
+      var updated = faces.find(function(f) { return f.id === face.id; });
+      if (updated) openCustomerDetail(updated);
+    }, 300);
+  });
+  actions.appendChild(renameBtn);
+
+  var delBtn = document.createElement('button');
+  delBtn.className = 'delete';
+  delBtn.textContent = 'Delete';
+  delBtn.addEventListener('click', function() {
+    deleteFace(face.id);
+    closeCustomerDetail();
+  });
+  actions.appendChild(delBtn);
+
+  infoDiv.appendChild(actions);
+  header.appendChild(infoDiv);
+  detail.appendChild(header);
+
+  // Sightings section
+  var secTitle = document.createElement('div');
+  secTitle.className = 'cd-section-title';
+  secTitle.textContent = 'Sighting History';
+  detail.appendChild(secTitle);
+
+  var sightingsDiv = document.createElement('div');
+  sightingsDiv.className = 'cd-sightings';
+  detail.appendChild(sightingsDiv);
+
+  // Load sightings for this person
+  try {
+    var res = await fetch(API + '/api/sightings?face_id=' + face.id + '&limit=50');
+    var sightings = await res.json();
+
+    if (sightings.length === 0) {
+      var empty = document.createElement('div');
+      empty.className = 'face-empty';
+      empty.textContent = 'No sightings recorded yet.';
+      sightingsDiv.appendChild(empty);
+    } else {
+      var table = document.createElement('table');
+      table.className = 'sightings-table';
+
+      var thead = document.createElement('thead');
+      var headRow = document.createElement('tr');
+      ['Snapshot', 'Camera', 'Time', 'Confidence'].forEach(function(h) {
+        var th = document.createElement('th');
+        th.textContent = h;
+        headRow.appendChild(th);
+      });
+      thead.appendChild(headRow);
+      table.appendChild(thead);
+
+      var tbody = document.createElement('tbody');
+      sightings.forEach(function(s) {
+        var tr = document.createElement('tr');
+
+        var tdImg = document.createElement('td');
+        if (s.image_url) {
+          var img = document.createElement('img');
+          img.src = s.image_url;
+          img.alt = 'sighting';
+          tdImg.appendChild(img);
+        } else {
+          tdImg.textContent = '-';
+        }
+        tr.appendChild(tdImg);
+
+        var tdCam = document.createElement('td');
+        tdCam.textContent = s.camera_id;
+        tr.appendChild(tdCam);
+
+        var tdTime = document.createElement('td');
+        tdTime.textContent = formatTime(s.timestamp);
+        tr.appendChild(tdTime);
+
+        var tdConf = document.createElement('td');
+        tdConf.textContent = (s.confidence * 100).toFixed(1) + '%';
+        tr.appendChild(tdConf);
+
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      sightingsDiv.appendChild(table);
+    }
+  } catch (e) {
+    console.error('Failed to load sightings for customer:', e);
+  }
+}
+
+function closeCustomerDetail() {
+  var listView = document.getElementById('customerListView');
+  var detail = document.getElementById('customerDetail');
+  var tabs = document.querySelector('#customerModal .face-tabs');
+  if (listView) listView.style.display = '';
+  if (tabs) tabs.style.display = '';
+  if (detail) {
+    detail.classList.remove('open');
+    detail.innerHTML = '';
+  }
+  loadFacesTab('known');
+}
+
+async function labelFace(faceId) {
+  var input = document.getElementById('name-' + faceId);
+  if (!input) return;
+  var name = input.value.trim();
+  if (!name) { input.focus(); return; }
+
+  try {
+    await fetch(API + '/api/faces/' + faceId, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name }),
+    });
+    loadFacesTab('unknown');
+  } catch (e) {
+    alert('Failed to label face: ' + e.message);
+  }
+}
+
+async function ignoreFace(faceId) {
+  try {
+    await fetch(API + '/api/faces/' + faceId + '/ignore', { method: 'PUT' });
+    loadFacesTab('unknown');
+  } catch (e) {
+    alert('Failed to ignore face: ' + e.message);
+  }
+}
+
+async function renameFace(faceId, currentName) {
+  var name = prompt('Enter new name:', currentName);
+  if (name === null || name.trim() === '') return;
+  try {
+    await fetch(API + '/api/faces/' + faceId, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name.trim() }),
+    });
+    loadFacesTab('known');
+  } catch (e) {
+    alert('Failed to rename: ' + e.message);
+  }
+}
+
+async function deleteFace(faceId) {
+  if (!confirm('Delete this face? This cannot be undone.')) return;
+  try {
+    await fetch(API + '/api/faces/' + faceId, { method: 'DELETE' });
+    loadFacesTab('known');
+  } catch (e) {
+    alert('Failed to delete: ' + e.message);
+  }
+}
+
+function formatTime(iso) {
+  if (!iso) return '';
+  var d = new Date(iso);
+  var now = new Date();
+  var diffMs = now - d;
+  var diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return 'Just now';
+  if (diffMin < 60) return diffMin + 'm ago';
+  var diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return diffHr + 'h ago';
+  var diffDay = Math.floor(diffHr / 24);
+  if (diffDay < 7) return diffDay + 'd ago';
+  return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+}
+
 // --- Keyboard ---
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') {
     document.querySelectorAll('.tile.fullscreen').forEach(function(t) { t.classList.remove('fullscreen'); });
     closeAddModal();
     closeDiscoverModal();
+    closeCustomerModal();
   }
 });
 
-// --- Auto-refresh MJPEG on error ---
+// --- Auto-retry offline cameras ---
 setInterval(function() {
-  cameras.filter(function(c) { return c.type === 'mjpeg'; }).forEach(function(cam) {
+  cameras.forEach(function(cam) {
     const tile = document.getElementById('tile-' + cam.id);
     if (!tile) return;
     const img = tile.querySelector('img');
     if (img && img.style.display === 'none') {
-      img.src = cam.stream_url + '?t=' + Date.now();
+      img.src = cam.stream_url + (cam.stream_url.includes('?') ? '&' : '?') + 't=' + Date.now();
       img.style.display = '';
       hideOffline(cam.id);
     }
   });
 }, 10000);
+
+// --- Floating unknown faces bar ---
+var _unknownBarIds = {};  // track what's already shown
+
+async function pollUnknownBar() {
+  try {
+    var res = await fetch(API + '/api/faces?status=unknown');
+    var faces = await res.json();
+    var bar = document.getElementById('unknownBar');
+    if (!bar) return;
+
+    // Remove cards for faces no longer unknown
+    var currentIds = {};
+    faces.forEach(function(f) { currentIds[f.id] = true; });
+    Object.keys(_unknownBarIds).forEach(function(id) {
+      if (!currentIds[id]) {
+        var card = document.getElementById('ubar-' + id);
+        if (card) card.remove();
+        delete _unknownBarIds[id];
+      }
+    });
+
+    // Add new cards
+    faces.forEach(function(face) {
+      if (_unknownBarIds[face.id]) return;  // already showing
+      _unknownBarIds[face.id] = true;
+
+      var card = document.createElement('div');
+      card.className = 'unknown-bar-card';
+      card.id = 'ubar-' + face.id;
+
+      var img = document.createElement('img');
+      img.src = face.image_url + '?t=' + Date.now();
+      img.alt = 'Unknown';
+      card.appendChild(img);
+
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.placeholder = 'Name...';
+      input.className = 'ubar-input';
+      input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+          quickLabel(face.id, input.value);
+          e.preventDefault();
+        } else if (e.key === 'Escape') {
+          quickIgnore(face.id);
+          e.preventDefault();
+        }
+        e.stopPropagation();
+      });
+      input.addEventListener('click', function(e) { e.stopPropagation(); });
+      card.appendChild(input);
+
+      var saveBtn = document.createElement('button');
+      saveBtn.className = 'btn-save';
+      saveBtn.textContent = 'Save';
+      saveBtn.addEventListener('click', function() { quickLabel(face.id, input.value); });
+      card.appendChild(saveBtn);
+
+      var ignBtn = document.createElement('button');
+      ignBtn.className = 'btn-ignore';
+      ignBtn.textContent = 'X';
+      ignBtn.title = 'Ignore';
+      ignBtn.addEventListener('click', function() { quickIgnore(face.id); });
+      card.appendChild(ignBtn);
+
+      bar.appendChild(card);
+    });
+
+    // Show/hide bar
+    if (faces.length > 0) {
+      bar.classList.add('visible');
+    } else {
+      bar.classList.remove('visible');
+    }
+  } catch (e) {
+    console.error('Unknown bar poll error:', e);
+  }
+}
+
+async function quickLabel(faceId, name) {
+  if (!name || !name.trim()) return;
+  try {
+    await fetch(API + '/api/faces/' + faceId, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name.trim() })
+    });
+    var card = document.getElementById('ubar-' + faceId);
+    if (card) card.remove();
+    delete _unknownBarIds[faceId];
+    // Focus next input
+    focusNextUnknownInput();
+    // Hide bar if empty
+    var bar = document.getElementById('unknownBar');
+    if (bar && bar.querySelectorAll('.unknown-bar-card').length === 0) {
+      bar.classList.remove('visible');
+    }
+    // Refresh known faces tab if open
+    var knownTab = document.getElementById('tab-known');
+    if (knownTab && knownTab.style.display !== 'none') loadFacesTab('known');
+  } catch (e) {
+    console.error('Quick label error:', e);
+  }
+}
+
+async function quickIgnore(faceId) {
+  try {
+    await fetch(API + '/api/faces/' + faceId + '/ignore', { method: 'PUT' });
+    var card = document.getElementById('ubar-' + faceId);
+    if (card) card.remove();
+    delete _unknownBarIds[faceId];
+    // Focus next input
+    focusNextUnknownInput();
+    var bar = document.getElementById('unknownBar');
+    if (bar && bar.querySelectorAll('.unknown-bar-card').length === 0) {
+      bar.classList.remove('visible');
+    }
+  } catch (e) {
+    console.error('Quick ignore error:', e);
+  }
+}
+
+function focusNextUnknownInput() {
+  var bar = document.getElementById('unknownBar');
+  if (!bar) return;
+  var nextInput = bar.querySelector('.ubar-input');
+  if (nextInput) {
+    setTimeout(function() { nextInput.focus(); }, 50);
+  }
+}
+
+setInterval(pollUnknownBar, 2000);
+pollUnknownBar();
+
+// --- Greeting overlay polling ---
+async function pollDetections() {
+  try {
+    var res = await fetch(API + '/api/detections');
+    var detections = await res.json();
+
+    // Group by camera_id, keep unique names with outfit info
+    var byCam = {};
+    detections.forEach(function(d) {
+      if (!byCam[d.camera_id]) byCam[d.camera_id] = {};
+      if (!byCam[d.camera_id][d.name] || d.confidence > byCam[d.camera_id][d.name].confidence) {
+        byCam[d.camera_id][d.name] = {
+          confidence: d.confidence,
+          outfit_color: d.outfit_color || '',
+          outfit_hex: d.outfit_hex || ''
+        };
+      }
+    });
+
+    // Update greeting overlays on all camera tiles
+    cameras.forEach(function(cam) {
+      var el = document.getElementById('greeting-' + cam.id);
+      if (!el) return;
+      var people = byCam[cam.id];
+      if (people && Object.keys(people).length > 0) {
+        var names = Object.keys(people);
+        var parts = names.map(function(name) {
+          var info = people[name];
+          var outfitDot = info.outfit_hex ? '<span class="outfit-dot" style="background:' + info.outfit_hex + '" title="' + info.outfit_color + ' outfit"></span>' : '';
+          if (name === 'New Customer') {
+            return '<span class="greeting-new">Welcome, New Customer!</span>' + outfitDot;
+          }
+          var conf = (info.confidence * 100).toFixed(0);
+          return 'Hello, ' + name + '!<span class="greeting-conf">' + conf + '%</span>' + outfitDot;
+        });
+        el.innerHTML = '<span class="greeting-icon">&#9786;</span>' + parts.join(' &nbsp; ');
+        el.classList.add('visible');
+      } else {
+        el.classList.remove('visible');
+      }
+    });
+  } catch (e) {
+    // Silently ignore polling errors
+  }
+}
+
+setInterval(pollDetections, 1000);
+
+// --- Tracking overlay (smooth floating labels + countdown) ---
+var AUTO_IGNORE_SEC = 30;
+var _trackTargets = {};   // cam_id -> [{face_id/method key, target bbox, ...}]
+var _trackSmooth = {};    // key -> {x, y, opacity} — smoothed positions
+var LERP = 0.15;          // smoothing factor (0=frozen, 1=instant)
+
+function drawRoundRect(ctx, x, y, w, h, r) {
+  if (w < 0) w = 0;
+  if (r > h / 2) r = h / 2;
+  if (r > w / 2) r = w / 2;
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+// Poll data from server (updates targets, NOT drawing)
+async function pollTracking() {
+  try {
+    var res = await fetch(API + '/api/tracking');
+    var persons = await res.json();
+    var byCam = {};
+    persons.forEach(function(p) {
+      if (!byCam[p.camera_id]) byCam[p.camera_id] = [];
+      byCam[p.camera_id].push(p);
+    });
+    _trackTargets = byCam;
+  } catch (e) {}
+}
+setInterval(pollTracking, 500);
+
+// Render loop — smooth 60fps drawing
+function renderTracking() {
+  requestAnimationFrame(renderTracking);
+  var now = Date.now();
+
+  cameras.forEach(function(cam) {
+    var canvas = document.getElementById('track-' + cam.id);
+    if (!canvas) return;
+    var tile = canvas.parentElement;
+    var img = tile.querySelector('img');
+    if (!img) return;
+
+    var w = tile.clientWidth;
+    var h = tile.clientHeight;
+    if (canvas.width !== w) canvas.width = w;
+    if (canvas.height !== h) canvas.height = h;
+
+    var ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, w, h);
+
+    var camPersons = _trackTargets[cam.id] || [];
+    if (camPersons.length === 0) return;
+
+    // object-fit: contain math
+    var imgW = img.naturalWidth || w;
+    var imgH = img.naturalHeight || h;
+    var scl = Math.min(w / imgW, h / imgH);
+    var dw = imgW * scl;
+    var dh = imgH * scl;
+    var ox = (w - dw) / 2;
+    var oy = (h - dh) / 2;
+
+    camPersons.forEach(function(p, idx) {
+      var bbox = p.bbox;
+      var targetX = ox + bbox[0] * dw;
+      var targetY = oy + bbox[1] * dh;
+      var targetW = bbox[2] * dw;
+      var targetH = bbox[3] * dh;
+      var targetCx = targetX + targetW / 2;
+
+      // Unique key for smoothing
+      var key = cam.id + '_' + (p.face_id || ('b' + idx));
+      var sm = _trackSmooth[key];
+      if (!sm) {
+        sm = { bx: targetX, by: targetY, bw: targetW, bh: targetH, cx: targetCx, op: 0 };
+        _trackSmooth[key] = sm;
+      }
+
+      // Lerp all values
+      sm.bx += (targetX - sm.bx) * LERP;
+      sm.by += (targetY - sm.by) * LERP;
+      sm.bw += (targetW - sm.bw) * LERP;
+      sm.bh += (targetH - sm.bh) * LERP;
+      sm.cx += (targetCx - sm.cx) * LERP;
+      sm.op += (1 - sm.op) * 0.18;
+
+      var isNew = (p.name === 'New Customer' || p.name === '');
+      var label = p.name || 'New Customer';
+
+      // Colors
+      var accent, glow, glowFaint;
+      if (isNew) {
+        accent = '#ff9800'; glow = 'rgba(255,152,0,0.45)'; glowFaint = 'rgba(255,152,0,0.08)';
+      } else if (p.method === 'face') {
+        accent = '#4caf50'; glow = 'rgba(76,175,80,0.4)'; glowFaint = 'rgba(76,175,80,0.06)';
+      } else if (p.method === 'outfit') {
+        accent = '#ab47bc'; glow = 'rgba(171,71,188,0.4)'; glowFaint = 'rgba(171,71,188,0.06)';
+      } else {
+        accent = '#42a5f5'; glow = 'rgba(66,165,245,0.35)'; glowFaint = 'rgba(66,165,245,0.06)';
+      }
+
+      ctx.save();
+      ctx.globalAlpha = sm.op;
+
+      // Target point: top-center of person body
+      var targetX = sm.cx;
+      var targetY = sm.by + 6;
+
+      // Small dot at person's head
+      ctx.beginPath();
+      ctx.arc(targetX, targetY, 3, 0, Math.PI * 2);
+      ctx.fillStyle = accent;
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(targetX, targetY, 5.5, 0, Math.PI * 2);
+      ctx.fillStyle = glow;
+      ctx.fill();
+
+      // ══════════════════════════════
+      // ── Floating name label (pill) ──
+      // ══════════════════════════════
+      ctx.font = 'bold 12px "Segoe UI", sans-serif';
+      var tw = ctx.measureText(label).width;
+      var pillW = tw + 30;
+      var pillH = 24;
+      var hasCountdown = isNew && p.first_seen;
+      var totalH = pillH + (hasCountdown ? 14 : 0) + 12;
+      var lx = sm.cx - pillW / 2;
+
+      // Clamp
+      if (lx < 4) lx = 4;
+      if (lx + pillW > w - 4) lx = w - 4 - pillW;
+      var topY = sm.by - totalH;
+      if (topY < 4) topY = 4;
+
+      // Glow shadow
+      ctx.shadowColor = glow;
+      ctx.shadowBlur = 14;
+      ctx.shadowOffsetY = 2;
+
+      // Pill background
+      drawRoundRect(ctx, lx, topY, pillW, pillH, 12);
+      ctx.fillStyle = 'rgba(15,15,20,0.82)';
+      ctx.fill();
+
+      // Pill border
+      ctx.shadowBlur = 0;
+      drawRoundRect(ctx, lx, topY, pillW, pillH, 12);
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // Left accent dot + glow
+      ctx.beginPath();
+      ctx.arc(lx + 12, topY + pillH / 2, 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = accent;
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(lx + 12, topY + pillH / 2, 6, 0, Math.PI * 2);
+      ctx.fillStyle = glow;
+      ctx.fill();
+
+      // Label text
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 12px "Segoe UI", sans-serif';
+      ctx.fillText(label, lx + 22, topY + 16);
+
+      // ══════════════════════════════════
+      // ── Curved line from pill to person ──
+      // ══════════════════════════════════
+      var lineStartX = lx + pillW / 2;
+      var lineStartY = topY + pillH;
+      var lineEndX = targetX;
+      var lineEndY = targetY;
+      var dist = lineEndY - lineStartY;
+
+      if (dist > 8) {
+        // Offset for a nice S-curve effect
+        var midY = lineStartY + dist * 0.45;
+        var offsetX = (lineEndX - lineStartX) * 0.3;
+
+        // Glow under the line
+        ctx.beginPath();
+        ctx.moveTo(lineStartX, lineStartY);
+        ctx.bezierCurveTo(
+          lineStartX + offsetX, midY - dist * 0.1,
+          lineEndX - offsetX, midY + dist * 0.15,
+          lineEndX, lineEndY
+        );
+        ctx.strokeStyle = glow;
+        ctx.lineWidth = 4;
+        ctx.lineCap = 'round';
+        ctx.stroke();
+
+        // Main line
+        ctx.beginPath();
+        ctx.moveTo(lineStartX, lineStartY);
+        ctx.bezierCurveTo(
+          lineStartX + offsetX, midY - dist * 0.1,
+          lineEndX - offsetX, midY + dist * 0.15,
+          lineEndX, lineEndY
+        );
+        ctx.strokeStyle = accent;
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([6, 3]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      // ══════════════════════════════
+      // ── Countdown bar (New Customer) ──
+      // ══════════════════════════════
+      if (hasCountdown) {
+        var firstMs = new Date(p.first_seen).getTime();
+        var elapsed = (now - firstMs) / 1000;
+        var remaining = Math.max(0, AUTO_IGNORE_SEC - elapsed);
+        var ratio = remaining / AUTO_IGNORE_SEC;
+
+        var barW = pillW - 8;
+        var barH = 4;
+        var barX = lx + 4;
+        var barY = topY + pillH + 9;
+
+        // Track
+        drawRoundRect(ctx, barX, barY, barW, barH, 2);
+        ctx.fillStyle = 'rgba(255,255,255,0.12)';
+        ctx.fill();
+
+        // Fill
+        if (ratio > 0) {
+          var fillW = Math.max(4, barW * ratio);
+          var barColor;
+          if (ratio > 0.5) barColor = '#ff9800';
+          else if (ratio > 0.2) barColor = '#ff5722';
+          else barColor = '#f44336';
+
+          ctx.shadowColor = barColor;
+          ctx.shadowBlur = 6;
+          drawRoundRect(ctx, barX, barY, fillW, barH, 2);
+          ctx.fillStyle = barColor;
+          ctx.fill();
+          ctx.shadowBlur = 0;
+        }
+
+        // Seconds text
+        var secText = Math.ceil(remaining) + 's';
+        ctx.font = '9px "Segoe UI", sans-serif';
+        ctx.fillStyle = 'rgba(255,255,255,0.5)';
+        ctx.fillText(secText, barX + barW + 3, barY + 4);
+      }
+
+      ctx.restore();
+    });
+
+    // Expire old smooth entries not in current targets
+    var validKeys = {};
+    camPersons.forEach(function(p, idx) {
+      validKeys[cam.id + '_' + (p.face_id || ('b' + idx))] = true;
+    });
+  });
+
+  // Clean stale smooth entries every 5s
+  if (now - (renderTracking._lastClean || 0) > 5000) {
+    renderTracking._lastClean = now;
+    var allValid = {};
+    cameras.forEach(function(cam) {
+      var pp = _trackTargets[cam.id] || [];
+      pp.forEach(function(p, idx) {
+        allValid[cam.id + '_' + (p.face_id || ('b' + idx))] = true;
+      });
+    });
+    Object.keys(_trackSmooth).forEach(function(k) {
+      if (!allValid[k]) delete _trackSmooth[k];
+    });
+  }
+}
+
+requestAnimationFrame(renderTracking);
 
 // --- Init ---
 loadCameras();

@@ -4,3 +4,5 @@ streams/
 cameras.json
 .env
 *.egg-info/
+face_data/
+test_frame.jpg
