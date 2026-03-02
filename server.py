@@ -235,8 +235,13 @@ async def list_faces(status: Optional[str] = Query(None)):
         }
         outfit = outfits.get(f.id)
         if outfit:
-            entry["outfit_color"] = outfit["color_name"]
-            entry["outfit_hex"] = outfit["color_hex"]
+            entry["shirt_color"] = outfit.get("shirt_color", "")
+            entry["shirt_hex"] = outfit.get("shirt_hex", "")
+            entry["pants_color"] = outfit.get("pants_color", "")
+            entry["pants_hex"] = outfit.get("pants_hex", "")
+            # Backward compat
+            entry["outfit_color"] = outfit.get("shirt_color", "")
+            entry["outfit_hex"] = outfit.get("shirt_hex", "")
         result.append(entry)
     return result
 
@@ -277,6 +282,13 @@ async def delete_face(face_id: str):
     if not face_mgr.delete_face(face_id):
         raise HTTPException(404, "Face not found")
     return {"ok": True}
+
+
+@app.get("/api/faces/{face_id}/outfits")
+async def face_outfits(face_id: str):
+    """Outfit history for a customer (last 90 days)."""
+    history = face_detector.get_outfit_history(face_id)
+    return history
 
 
 @app.get("/api/sightings")
@@ -342,8 +354,23 @@ async def index():
 
 
 if __name__ == "__main__":
+    import socket
+    def _get_lan_ip():
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return "unknown"
+
+    lan_ip = _get_lan_ip()
     print("=" * 50)
     print("  LAN Camera Viewer")
-    print("  Open http://localhost:8080 in your browser")
+    print(f"  Local:   http://localhost:8080")
+    print(f"  Network: http://{lan_ip}:8080")
+    print()
+    print("  Share the Network URL with others on your LAN")
     print("=" * 50)
     uvicorn.run(app, host="0.0.0.0", port=8080)

@@ -202,7 +202,7 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    z-index: 100;
+    z-index: 200;
     overflow-x: auto;
     transition: transform 0.3s;
     transform: translateY(100%);
@@ -765,12 +765,30 @@ let gridSize = 2;
 let discoveredCameras = [];
 
 // --- Grid ---
+var userSetGrid = false; // true once user clicks a grid button manually
+
 function setGrid(n) {
   gridSize = n;
+  userSetGrid = true;
   document.querySelectorAll('.toolbar button[id^="g"]').forEach(function(b) { b.classList.remove('active'); });
   document.getElementById('g' + n).classList.add('active');
   const grid = document.getElementById('grid');
   grid.className = 'grid g' + n;
+}
+
+function autoGrid(count) {
+  if (userSetGrid) return; // user chose manually, don't override
+  var n;
+  if (count <= 1) n = 1;
+  else if (count <= 4) n = 2;
+  else if (count <= 9) n = 3;
+  else n = 4;
+  if (n !== gridSize) {
+    gridSize = n;
+    document.querySelectorAll('.toolbar button[id^="g"]').forEach(function(b) { b.classList.remove('active'); });
+    document.getElementById('g' + n).classList.add('active');
+    document.getElementById('grid').className = 'grid g' + n;
+  }
 }
 
 // --- Load cameras ---
@@ -782,8 +800,22 @@ async function loadCameras() {
     console.error('Failed to load cameras:', e);
     cameras = [];
   }
+  autoGrid(cameras.length);
   renderGrid();
 }
+
+// Poll for new cameras every 5s
+setInterval(function() {
+  var oldIds = cameras.map(function(c) { return c.id; }).sort().join(',');
+  fetch(API + '/api/cameras').then(function(r) { return r.json(); }).then(function(newCams) {
+    var newIds = newCams.map(function(c) { return c.id; }).sort().join(',');
+    if (newIds !== oldIds) {
+      cameras = newCams;
+      autoGrid(cameras.length);
+      renderGrid();
+    }
+  }).catch(function() {});
+}, 5000);
 
 // --- Render grid ---
 function renderGrid() {
@@ -1170,21 +1202,23 @@ async function loadFacesTab(status) {
         var nameEl = document.createElement('div');
         nameEl.className = 'face-name';
         nameEl.textContent = face.name;
-        if (face.outfit_color) {
-          var swatch = document.createElement('span');
-          swatch.className = 'outfit-swatch';
-          swatch.style.background = face.outfit_hex;
-          swatch.title = "Today's outfit: " + face.outfit_color;
-          nameEl.insertBefore(swatch, nameEl.firstChild);
-        }
         info.appendChild(nameEl);
 
         var meta = document.createElement('div');
         meta.className = 'face-meta';
-        var metaText = 'Last seen: ' + formatTime(face.last_seen);
-        if (face.outfit_color) metaText += ' | Outfit: ' + face.outfit_color;
-        meta.textContent = metaText;
+        meta.textContent = 'Last seen: ' + formatTime(face.last_seen);
         info.appendChild(meta);
+
+        // Today's outfit
+        if (face.shirt_color || face.pants_color) {
+          var outfitMeta = document.createElement('div');
+          outfitMeta.className = 'face-meta';
+          var parts = [];
+          if (face.shirt_color) parts.push('Shirt: ' + face.shirt_color);
+          if (face.pants_color) parts.push('Pants: ' + face.pants_color);
+          outfitMeta.textContent = parts.join(' | ');
+          info.appendChild(outfitMeta);
+        }
 
         // Encoding count
         if (face.encoding_count) {
@@ -1323,13 +1357,20 @@ async function openCustomerDetail(face) {
     { label: 'Face samples', value: (face.encoding_count || 0) + '' },
     { label: 'Camera', value: face.camera_id },
   ];
-  if (face.outfit_color) {
-    statItems.push({ label: 'Outfit', value: face.outfit_color });
+  if (face.shirt_color) {
+    statItems.push({ label: 'Shirt', value: face.shirt_color, hex: face.shirt_hex });
+  }
+  if (face.pants_color) {
+    statItems.push({ label: 'Pants', value: face.pants_color, hex: face.pants_hex });
   }
   statItems.forEach(function(s) {
     var el = document.createElement('div');
     el.className = 'cd-stat';
-    el.innerHTML = s.label + ': <b>' + s.value + '</b>';
+    var html = s.label + ': <b>' + s.value + '</b>';
+    if (s.hex) {
+      html = '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + s.hex + ';vertical-align:middle;margin-right:3px;border:1px solid #555"></span>' + html;
+    }
+    el.innerHTML = html;
     stats.appendChild(el);
   });
   infoDiv.appendChild(stats);
@@ -1364,6 +1405,72 @@ async function openCustomerDetail(face) {
   infoDiv.appendChild(actions);
   header.appendChild(infoDiv);
   detail.appendChild(header);
+
+  // Outfit history section
+  var outfitTitle = document.createElement('div');
+  outfitTitle.className = 'cd-section-title';
+  outfitTitle.textContent = 'Outfit History';
+  detail.appendChild(outfitTitle);
+
+  var outfitDiv = document.createElement('div');
+  outfitDiv.style.marginBottom = '16px';
+  detail.appendChild(outfitDiv);
+
+  try {
+    var outfitRes = await fetch(API + '/api/faces/' + face.id + '/outfits');
+    var outfits = await outfitRes.json();
+
+    if (outfits.length === 0) {
+      var emptyO = document.createElement('div');
+      emptyO.className = 'face-empty';
+      emptyO.style.padding = '12px 0';
+      emptyO.textContent = 'No outfit data recorded yet.';
+      outfitDiv.appendChild(emptyO);
+    } else {
+      var oTable = document.createElement('table');
+      oTable.className = 'sightings-table';
+      var oHead = document.createElement('thead');
+      var oHeadRow = document.createElement('tr');
+      ['Date', 'Shirt', 'Pants'].forEach(function(h) {
+        var th = document.createElement('th');
+        th.textContent = h;
+        oHeadRow.appendChild(th);
+      });
+      oHead.appendChild(oHeadRow);
+      oTable.appendChild(oHead);
+
+      var oBody = document.createElement('tbody');
+      outfits.slice().reverse().forEach(function(o) {
+        var tr = document.createElement('tr');
+
+        var tdDate = document.createElement('td');
+        tdDate.textContent = o.date || '';
+        tr.appendChild(tdDate);
+
+        var tdShirt = document.createElement('td');
+        if (o.shirt_color) {
+          tdShirt.innerHTML = '<span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:' + (o.shirt_hex || '#666') + ';vertical-align:middle;margin-right:5px;border:1px solid #555"></span>' + o.shirt_color;
+        } else {
+          tdShirt.textContent = '-';
+        }
+        tr.appendChild(tdShirt);
+
+        var tdPants = document.createElement('td');
+        if (o.pants_color) {
+          tdPants.innerHTML = '<span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:' + (o.pants_hex || '#666') + ';vertical-align:middle;margin-right:5px;border:1px solid #555"></span>' + o.pants_color;
+        } else {
+          tdPants.textContent = '-';
+        }
+        tr.appendChild(tdPants);
+
+        oBody.appendChild(tr);
+      });
+      oTable.appendChild(oBody);
+      outfitDiv.appendChild(oTable);
+    }
+  } catch (e) {
+    console.error('Failed to load outfit history:', e);
+  }
 
   // Sightings section
   var secTitle = document.createElement('div');
@@ -1503,7 +1610,12 @@ async function deleteFace(faceId) {
 
 function formatTime(iso) {
   if (!iso) return '';
-  var d = new Date(iso);
+  // If no timezone offset in the string, treat as local time (not UTC)
+  var s = String(iso);
+  if (s.length > 10 && !s.includes('+') && !s.includes('Z') && !s.match(/\d{2}-\d{2}$/)) {
+    s += '+07:00';
+  }
+  var d = new Date(s);
   var now = new Date();
   var diffMs = now - d;
   var diffMin = Math.floor(diffMs / 60000);
@@ -1817,168 +1929,86 @@ function renderTracking() {
       sm.op += (1 - sm.op) * 0.18;
 
       var isNew = (p.name === 'New Customer' || p.name === '');
-      var label = p.name || 'New Customer';
+      var isOutfit = (p.method === 'outfit');
+      var isFace = (p.method === 'face');
 
-      // Colors
-      var accent, glow, glowFaint;
-      if (isNew) {
-        accent = '#ff9800'; glow = 'rgba(255,152,0,0.45)'; glowFaint = 'rgba(255,152,0,0.08)';
-      } else if (p.method === 'face') {
-        accent = '#4caf50'; glow = 'rgba(76,175,80,0.4)'; glowFaint = 'rgba(76,175,80,0.06)';
-      } else if (p.method === 'outfit') {
-        accent = '#ab47bc'; glow = 'rgba(171,71,188,0.4)'; glowFaint = 'rgba(171,71,188,0.06)';
+      // Circle color: Green=known(face), Yellow=guessed(outfit), Orange=new
+      var circleColor, glowColor, label;
+      if (!isNew && isFace) {
+        // Confirmed known customer (face match)
+        circleColor = '#4caf50';
+        glowColor = 'rgba(76,175,80,0.5)';
+        label = p.name;
+      } else if (!isNew && isOutfit) {
+        // Guessed by outfit — not sure
+        circleColor = '#ffeb3b';
+        glowColor = 'rgba(255,235,59,0.5)';
+        label = p.name + '?';
       } else {
-        accent = '#42a5f5'; glow = 'rgba(66,165,245,0.35)'; glowFaint = 'rgba(66,165,245,0.06)';
+        // New / unknown
+        circleColor = '#ff9800';
+        glowColor = 'rgba(255,152,0,0.5)';
+        label = '';
       }
 
       ctx.save();
       ctx.globalAlpha = sm.op;
 
-      // Target point: top-center of person body
-      var targetX = sm.cx;
-      var targetY = sm.by + 6;
+      // Circle position: top-center of person, above head
+      var cx = sm.cx;
+      var cy = sm.by - 2;
+      var radius = 10;
 
-      // Small dot at person's head
+      // Glow
       ctx.beginPath();
-      ctx.arc(targetX, targetY, 3, 0, Math.PI * 2);
-      ctx.fillStyle = accent;
+      ctx.arc(cx, cy, radius + 5, 0, Math.PI * 2);
+      ctx.fillStyle = glowColor;
       ctx.fill();
+
+      // Outer ring
       ctx.beginPath();
-      ctx.arc(targetX, targetY, 5.5, 0, Math.PI * 2);
-      ctx.fillStyle = glow;
-      ctx.fill();
-
-      // ══════════════════════════════
-      // ── Floating name label (pill) ──
-      // ══════════════════════════════
-      ctx.font = 'bold 12px "Segoe UI", sans-serif';
-      var tw = ctx.measureText(label).width;
-      var pillW = tw + 30;
-      var pillH = 24;
-      var hasCountdown = isNew && p.first_seen;
-      var totalH = pillH + (hasCountdown ? 14 : 0) + 12;
-      var lx = sm.cx - pillW / 2;
-
-      // Clamp
-      if (lx < 4) lx = 4;
-      if (lx + pillW > w - 4) lx = w - 4 - pillW;
-      var topY = sm.by - totalH;
-      if (topY < 4) topY = 4;
-
-      // Glow shadow
-      ctx.shadowColor = glow;
-      ctx.shadowBlur = 14;
-      ctx.shadowOffsetY = 2;
-
-      // Pill background
-      drawRoundRect(ctx, lx, topY, pillW, pillH, 12);
-      ctx.fillStyle = 'rgba(15,15,20,0.82)';
-      ctx.fill();
-
-      // Pill border
-      ctx.shadowBlur = 0;
-      drawRoundRect(ctx, lx, topY, pillW, pillH, 12);
-      ctx.strokeStyle = accent;
-      ctx.lineWidth = 1.5;
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.strokeStyle = circleColor;
+      ctx.lineWidth = 2.5;
       ctx.stroke();
 
-      // Left accent dot + glow
+      // Inner fill
       ctx.beginPath();
-      ctx.arc(lx + 12, topY + pillH / 2, 3.5, 0, Math.PI * 2);
-      ctx.fillStyle = accent;
+      ctx.arc(cx, cy, radius - 2, 0, Math.PI * 2);
+      ctx.fillStyle = circleColor;
+      ctx.globalAlpha = sm.op * 0.35;
       ctx.fill();
-      ctx.beginPath();
-      ctx.arc(lx + 12, topY + pillH / 2, 6, 0, Math.PI * 2);
-      ctx.fillStyle = glow;
-      ctx.fill();
+      ctx.globalAlpha = sm.op;
 
-      // Label text
-      ctx.fillStyle = '#fff';
-      ctx.font = 'bold 12px "Segoe UI", sans-serif';
-      ctx.fillText(label, lx + 22, topY + 16);
+      // Name label above circle (if has name)
+      if (label) {
+        ctx.font = 'bold 12px "Segoe UI", sans-serif';
+        var tw = ctx.measureText(label).width;
+        var labelX = cx - tw / 2 - 6;
+        var labelY = cy - radius - 18;
 
-      // ══════════════════════════════════
-      // ── Curved line from pill to person ──
-      // ══════════════════════════════════
-      var lineStartX = lx + pillW / 2;
-      var lineStartY = topY + pillH;
-      var lineEndX = targetX;
-      var lineEndY = targetY;
-      var dist = lineEndY - lineStartY;
+        // Clamp
+        if (labelX < 2) labelX = 2;
+        if (labelX + tw + 12 > w - 2) labelX = w - 2 - tw - 12;
+        if (labelY < 2) labelY = 2;
 
-      if (dist > 8) {
-        // Offset for a nice S-curve effect
-        var midY = lineStartY + dist * 0.45;
-        var offsetX = (lineEndX - lineStartX) * 0.3;
-
-        // Glow under the line
-        ctx.beginPath();
-        ctx.moveTo(lineStartX, lineStartY);
-        ctx.bezierCurveTo(
-          lineStartX + offsetX, midY - dist * 0.1,
-          lineEndX - offsetX, midY + dist * 0.15,
-          lineEndX, lineEndY
-        );
-        ctx.strokeStyle = glow;
-        ctx.lineWidth = 4;
-        ctx.lineCap = 'round';
-        ctx.stroke();
-
-        // Main line
-        ctx.beginPath();
-        ctx.moveTo(lineStartX, lineStartY);
-        ctx.bezierCurveTo(
-          lineStartX + offsetX, midY - dist * 0.1,
-          lineEndX - offsetX, midY + dist * 0.15,
-          lineEndX, lineEndY
-        );
-        ctx.strokeStyle = accent;
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([6, 3]);
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
-
-      // ══════════════════════════════
-      // ── Countdown bar (New Customer) ──
-      // ══════════════════════════════
-      if (hasCountdown) {
-        var firstMs = new Date(p.first_seen).getTime();
-        var elapsed = (now - firstMs) / 1000;
-        var remaining = Math.max(0, AUTO_IGNORE_SEC - elapsed);
-        var ratio = remaining / AUTO_IGNORE_SEC;
-
-        var barW = pillW - 8;
-        var barH = 4;
-        var barX = lx + 4;
-        var barY = topY + pillH + 9;
-
-        // Track
-        drawRoundRect(ctx, barX, barY, barW, barH, 2);
-        ctx.fillStyle = 'rgba(255,255,255,0.12)';
+        // Background
+        ctx.shadowColor = glowColor;
+        ctx.shadowBlur = 8;
+        drawRoundRect(ctx, labelX, labelY, tw + 12, 20, 10);
+        ctx.fillStyle = 'rgba(15,15,20,0.8)';
         ctx.fill();
+        ctx.shadowBlur = 0;
 
-        // Fill
-        if (ratio > 0) {
-          var fillW = Math.max(4, barW * ratio);
-          var barColor;
-          if (ratio > 0.5) barColor = '#ff9800';
-          else if (ratio > 0.2) barColor = '#ff5722';
-          else barColor = '#f44336';
+        // Border
+        drawRoundRect(ctx, labelX, labelY, tw + 12, 20, 10);
+        ctx.strokeStyle = circleColor;
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
 
-          ctx.shadowColor = barColor;
-          ctx.shadowBlur = 6;
-          drawRoundRect(ctx, barX, barY, fillW, barH, 2);
-          ctx.fillStyle = barColor;
-          ctx.fill();
-          ctx.shadowBlur = 0;
-        }
-
-        // Seconds text
-        var secText = Math.ceil(remaining) + 's';
-        ctx.font = '9px "Segoe UI", sans-serif';
-        ctx.fillStyle = 'rgba(255,255,255,0.5)';
-        ctx.fillText(secText, barX + barW + 3, barY + 4);
+        // Text
+        ctx.fillStyle = '#fff';
+        ctx.fillText(label, labelX + 6, labelY + 14.5);
       }
 
       ctx.restore();

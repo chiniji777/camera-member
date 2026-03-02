@@ -33,6 +33,7 @@ def _local_iso() -> str:
 FACE_DATA_DIR = Path("face_data")
 FACES_FILE = FACE_DATA_DIR / "faces.json"
 SIGHTINGS_FILE = FACE_DATA_DIR / "sightings.json"
+OUTFITS_FILE = FACE_DATA_DIR / "outfits.json"
 CROPS_DIR = FACE_DATA_DIR / "crops"
 SIGHTINGS_IMG_DIR = FACE_DATA_DIR / "sightings_img"
 MODELS_DIR = FACE_DATA_DIR / "models"
@@ -99,17 +100,35 @@ class FaceManager:
                     elif "encoding" in item:
                         item.pop("encoding")
                     f = Face(**item)
+                    # Migrate naive timestamps to local tz
+                    f.first_seen = self._fix_naive_ts(f.first_seen)
+                    f.last_seen = self._fix_naive_ts(f.last_seen)
                     self.faces[f.id] = f
             except Exception as e:
                 logger.error(f"Failed to load faces.json: {e}")
 
         if SIGHTINGS_FILE.exists():
             try:
-                self.sightings = [
-                    Sighting(**s) for s in json.loads(SIGHTINGS_FILE.read_text())
-                ]
+                raw = json.loads(SIGHTINGS_FILE.read_text())
+                for s in raw:
+                    s["timestamp"] = self._fix_naive_ts(s.get("timestamp", ""))
+                self.sightings = [Sighting(**s) for s in raw]
             except Exception as e:
                 logger.error(f"Failed to load sightings.json: {e}")
+
+    @staticmethod
+    def _fix_naive_ts(ts: str) -> str:
+        """Add local timezone to naive ISO timestamps."""
+        if not ts:
+            return ts
+        try:
+            dt = datetime.fromisoformat(ts)
+            if dt.tzinfo is None:
+                dt = dt.astimezone()
+                return dt.isoformat()
+        except Exception:
+            pass
+        return ts
 
     def _save_faces(self):
         data = [asdict(f) for f in self.faces.values()]
@@ -331,8 +350,10 @@ class FaceDetector:
         self._last_sighting: dict[tuple[str, str], float] = {}
         self._active_detections: dict[str, list[dict]] = {}  # cam_id -> detections
         # Outfit color tracking — resets daily
-        self._outfit_data: dict[str, dict] = {}  # face_id -> {"date", "color_hex", "color_name"}
+        self._outfit_data: dict[str, dict] = {}  # face_id -> {"date", "shirt_color", "shirt_hex", "pants_color", "pants_hex"}
         self._outfit_date: str = ""  # current tracking date
+        self._outfit_log: dict[str, list[dict]] = {}  # face_id -> [{date, shirt_*, pants_*}]
+        self._load_outfit_log()
         # Body tracking — persons with bboxes
         self._tracked_persons: dict[str, list[dict]] = {}  # cam_id -> [{bbox, name, ...}]
 
@@ -396,21 +417,63 @@ class FaceDetector:
             result.extend(fresh)
         return result
 
+    def _load_outfit_log(self):
+        """Load outfit history from disk."""
+        if OUTFITS_FILE.exists():
+            try:
+                self._outfit_log = json.loads(OUTFITS_FILE.read_text())
+            except Exception as e:
+                logger.error(f"Failed to load outfits.json: {e}")
+                self._outfit_log = {}
+
+    def _save_outfit_log(self):
+        OUTFITS_FILE.write_text(json.dumps(self._outfit_log, indent=2, ensure_ascii=False))
+
+    def _record_outfit(self, face_id: str, shirt: Optional[dict], pants: Optional[dict]):
+        """Record today's outfit (shirt + pants) for a face."""
+        today = _local_now().strftime("%Y-%m-%d")
+        entry = {"date": today}
+        if shirt:
+            entry["shirt_color"] = shirt["color_name"]
+            entry["shirt_hex"] = shirt["color_hex"]
+        if pants:
+            entry["pants_color"] = pants["color_name"]
+            entry["pants_hex"] = pants["color_hex"]
+
+        # Update in-memory today cache
+        self._outfit_data[face_id] = entry
+
+        # Update persistent log (one entry per face per day)
+        if face_id not in self._outfit_log:
+            self._outfit_log[face_id] = []
+        log = self._outfit_log[face_id]
+        # Replace today's entry if exists
+        log = [e for e in log if e.get("date") != today]
+        log.append(entry)
+        # Keep last 90 days
+        log = log[-90:]
+        self._outfit_log[face_id] = log
+        self._save_outfit_log()
+
     def get_outfit(self, face_id: str) -> Optional[dict]:
-        """Return today's outfit color for a face, or None."""
+        """Return today's outfit for a face, or None."""
         today = _local_now().strftime("%Y-%m-%d")
         if self._outfit_date != today:
             return None
         return self._outfit_data.get(face_id)
 
     def get_all_outfits(self) -> dict[str, dict]:
-        """Return all outfit colors for today."""
+        """Return all outfit data for today."""
         today = _local_now().strftime("%Y-%m-%d")
         if self._outfit_date != today:
             self._outfit_data.clear()
             self._outfit_date = today
             return {}
         return dict(self._outfit_data)
+
+    def get_outfit_history(self, face_id: str) -> list[dict]:
+        """Return outfit history for a face (last 90 days)."""
+        return self._outfit_log.get(face_id, [])
 
     def _check_daily_reset(self):
         """Clear outfit data if the date has changed."""
@@ -482,6 +545,22 @@ class FaceDetector:
         else:
             return {"color_hex": "#EC407A", "color_name": "Pink"}
 
+    def _extract_pants_color(self, img: np.ndarray, bbox) -> Optional[dict]:
+        """Extract pants color from lower body region below face."""
+        x, y, fw, fh = bbox
+        h, w = img.shape[:2]
+
+        # Pants region: ~2.5-4.5x face height below face top
+        pants_top = min(h, y + int(fh * 2.5))
+        pants_bot = min(h, y + int(fh * 4.5))
+        pants_left = max(0, x - int(fw * 0.2))
+        pants_right = min(w, x + fw + int(fw * 0.2))
+
+        if pants_bot - pants_top < 10 or pants_right - pants_left < 10:
+            return None
+
+        return self._extract_color_from_rect(img, pants_left, pants_top, pants_right, pants_bot)
+
     def _extract_color_from_rect(self, img: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> Optional[dict]:
         """Extract dominant color from an arbitrary image rectangle."""
         ih, iw = img.shape[:2]
@@ -538,7 +617,7 @@ class FaceDetector:
             return None, None
         candidates = []
         for face_id, outfit in self._outfit_data.items():
-            if outfit["color_name"] == color_name:
+            if outfit.get("shirt_color", outfit.get("color_name", "")) == color_name:
                 face = self._face_mgr.get_face(face_id)
                 if face and face.name and face.status == "known":
                     candidates.append((face.name, face_id))
@@ -628,7 +707,8 @@ class FaceDetector:
                 _, crop_jpg = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 crop_bytes = crop_jpg.tobytes()
 
-                outfit = self._extract_outfit_color(img, (x, y, fw, fh))
+                shirt = self._extract_outfit_color(img, (x, y, fw, fh))
+                pants = self._extract_pants_color(img, (x, y, fw, fh))
                 matched, confidence = self._face_mgr.find_match(enc_list)
 
                 if matched:
@@ -641,8 +721,8 @@ class FaceDetector:
                     else:
                         matched.last_seen = _local_iso()
 
-                    if outfit:
-                        self._outfit_data[matched.id] = {"date": _local_now().strftime("%Y-%m-%d"), **outfit}
+                    if shirt or pants:
+                        self._record_outfit(matched.id, shirt, pants)
 
                     if matched.name and confidence >= self.GREETING_THRESHOLD:
                         detection = {
@@ -652,8 +732,8 @@ class FaceDetector:
                         }
                         face_outfit = self._outfit_data.get(matched.id)
                         if face_outfit:
-                            detection["outfit_color"] = face_outfit["color_name"]
-                            detection["outfit_hex"] = face_outfit["color_hex"]
+                            detection["outfit_color"] = face_outfit.get("shirt_color", "")
+                            detection["outfit_hex"] = face_outfit.get("shirt_hex", "")
                         self._active_detections.setdefault(cam_id, []).append(detection)
 
                     frame_faces.append({
@@ -662,17 +742,17 @@ class FaceDetector:
                     })
                 else:
                     new_face = self._face_mgr.add_face(enc_list, crop_bytes, cam_id)
-                    if outfit:
-                        self._outfit_data[new_face.id] = {"date": _local_now().strftime("%Y-%m-%d"), **outfit}
+                    if shirt or pants:
+                        self._record_outfit(new_face.id, shirt, pants)
 
                     if new_face.status == "unknown":
                         detection = {
                             "face_id": new_face.id, "name": "New Customer",
                             "confidence": 0.0, "camera_id": cam_id, "time": time.time(),
                         }
-                        if outfit:
-                            detection["outfit_color"] = outfit["color_name"]
-                            detection["outfit_hex"] = outfit["color_hex"]
+                        if shirt:
+                            detection["outfit_color"] = shirt["color_name"]
+                            detection["outfit_hex"] = shirt["color_hex"]
                         self._active_detections.setdefault(cam_id, []).append(detection)
 
                     frame_faces.append({
@@ -687,7 +767,8 @@ class FaceDetector:
         small_frame = cv2.resize(img, (detect_w, detect_h))
 
         bodies, weights = self._hog.detectMultiScale(
-            small_frame, winStride=(4, 4), padding=(8, 8), scale=1.05
+            small_frame, winStride=(8, 8), padding=(4, 4), scale=1.05,
+            hitThreshold=0.3,
         )
 
         tracked = []
@@ -695,16 +776,29 @@ class FaceDetector:
 
         if bodies is not None and len(bodies) > 0:
             for i, (bx, by, bw, bh) in enumerate(bodies):
+                # Filter low-confidence detections
+                conf = float(weights[i]) if i < len(weights) else 0
+                if conf < 0.4:
+                    continue
+
                 # Scale back to original coords
                 bx_o = int(bx * scale_factor)
                 by_o = int(by * scale_factor)
                 bw_o = int(bw * scale_factor)
                 bh_o = int(bh * scale_factor)
 
+                # Filter: body must be taller than wide (aspect ratio > 1.2)
+                if bh_o < bw_o * 1.2:
+                    continue
+
+                # Filter: body must be minimum size (at least 5% of frame height)
+                if bh_o < h * 0.05:
+                    continue
+
                 person_name = ""
                 person_face_id = ""
                 match_method = "body"
-                person_conf = float(weights[i]) if i < len(weights) else 0
+                person_conf = conf
 
                 # Try linking to a detected face
                 for fi, ff in enumerate(frame_faces):
