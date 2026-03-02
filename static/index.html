@@ -669,6 +669,179 @@
     pointer-events: none;
     z-index: 15;
   }
+
+  /* --- Smart Home Panel --- */
+  .smarthome-panel {
+    display: none;
+    flex: 1;
+    flex-direction: column;
+    overflow: hidden;
+    background: #0a0a0a;
+  }
+  .smarthome-panel.active { display: flex; }
+  .sh-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 20px 12px;
+    border-bottom: 1px solid #222;
+  }
+  .sh-header h2 {
+    font-size: 18px;
+    font-weight: 600;
+    color: #e0e0e0;
+    margin-right: auto;
+  }
+  .sh-scan-btn {
+    padding: 7px 18px;
+    border: 1px solid #4fc3f7;
+    background: transparent;
+    color: #4fc3f7;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    transition: all 0.2s;
+  }
+  .sh-scan-btn:hover { background: #4fc3f7; color: #000; }
+  .sh-scan-btn.scanning {
+    border-color: #ff9800;
+    color: #ff9800;
+    cursor: default;
+    animation: shPulse 1s infinite;
+  }
+  @keyframes shPulse { 0%,100% { opacity:1; } 50% { opacity:0.5; } }
+  .sh-progress {
+    height: 3px;
+    background: #1a1a1a;
+    flex-shrink: 0;
+  }
+  .sh-progress-bar {
+    height: 100%;
+    background: #4fc3f7;
+    width: 0%;
+    transition: width 0.3s;
+  }
+  .sh-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
+  }
+  .sh-empty {
+    text-align: center;
+    color: #666;
+    padding: 60px 20px;
+    font-size: 14px;
+  }
+  .sh-empty-icon { font-size: 48px; margin-bottom: 12px; }
+  .sh-section-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin: 20px 0 10px;
+  }
+  .sh-section-title:first-child { margin-top: 0; }
+  .sh-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 12px;
+  }
+  .sh-card {
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 10px;
+    padding: 16px;
+    transition: border-color 0.2s;
+  }
+  .sh-card:hover { border-color: #444; }
+  .sh-card-top {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+  .sh-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    flex-shrink: 0;
+  }
+  .sh-icon.switch { background: #1b5e20; }
+  .sh-icon.light { background: #e65100; }
+  .sh-icon.sensor { background: #0d47a1; }
+  .sh-icon.plug { background: #4a148c; }
+  .sh-icon.broker { background: #3e2723; }
+  .sh-icon.hub { background: #37474f; }
+  .sh-icon.unknown { background: #333; }
+  .sh-card-info { flex: 1; min-width: 0; }
+  .sh-card-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: #e0e0e0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sh-card-sub {
+    font-size: 11px;
+    color: #888;
+    margin-top: 2px;
+  }
+  .sh-card-body {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .sh-stat {
+    font-size: 12px;
+    color: #aaa;
+    background: #222;
+    padding: 3px 8px;
+    border-radius: 4px;
+  }
+  .sh-stat b { color: #e0e0e0; font-weight: 600; }
+  .sh-toggle {
+    margin-left: auto;
+    width: 48px;
+    height: 26px;
+    border-radius: 13px;
+    border: none;
+    cursor: pointer;
+    position: relative;
+    transition: background 0.2s;
+    background: #333;
+    flex-shrink: 0;
+  }
+  .sh-toggle.on { background: #4caf50; }
+  .sh-toggle::after {
+    content: '';
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform 0.2s;
+  }
+  .sh-toggle.on::after { transform: translateX(22px); }
+  .sh-brand-tag {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: #2a2a2a;
+    color: #888;
+  }
 </style>
 </head>
 <body>
@@ -683,12 +856,33 @@
   <button onclick="setGrid(4)" id="g4">4x4</button>
 
   <button onclick="openCustomerModal()">Customers</button>
+  <button onclick="toggleSmartHome()" id="btnSmartHome">Smart Home</button>
   <button class="primary" onclick="openAddModal()">+ Add Camera</button>
   <button onclick="openDiscoverModal()">Discover</button>
 </div>
 
 <!-- Camera Grid -->
 <div class="grid g2" id="grid"></div>
+
+<!-- Smart Home Panel (hidden by default, replaces grid when active) -->
+<div class="smarthome-panel" id="smarthomePanel">
+  <div class="sh-header">
+    <h2>🏠 Smart Home Devices</h2>
+    <span id="shDeviceCount" style="color:#888;font-size:13px"></span>
+    <button class="sh-scan-btn" id="shScanBtn" onclick="shScan()">Scan Network</button>
+  </div>
+  <div class="sh-progress" id="shProgress" style="display:none">
+    <div class="sh-progress-bar" id="shProgressBar"></div>
+  </div>
+  <div class="sh-body" id="shBody">
+    <div class="sh-empty" id="shEmpty">
+      <div class="sh-empty-icon">📡</div>
+      <div>Click <b>Scan Network</b> to discover WiFi switches, sensors &amp; smart devices on your LAN</div>
+      <div style="margin-top:8px;font-size:12px;color:#555">Supports: Tasmota · Shelly · ESPHome · TP-Link Kasa · MQTT</div>
+    </div>
+    <div id="shDevices"></div>
+  </div>
+</div>
 
 <!-- Floating unknown faces bar -->
 <div class="unknown-bar" id="unknownBar">
@@ -2038,6 +2232,164 @@ function renderTracking() {
 }
 
 requestAnimationFrame(renderTracking);
+
+// --- Smart Home ---
+var _shView = false;
+var _shPollTimer = null;
+
+function toggleSmartHome() {
+  if (_shView) {
+    _shView = false;
+    document.getElementById('grid').style.display = '';
+    document.getElementById('smarthomePanel').classList.remove('active');
+    document.getElementById('btnSmartHome').classList.remove('active');
+    ['g1','g2','g3','g4'].forEach(function(id) {
+      document.getElementById(id).style.display = '';
+    });
+    if (_shPollTimer) { clearInterval(_shPollTimer); _shPollTimer = null; }
+  } else {
+    _shView = true;
+    document.getElementById('grid').style.display = 'none';
+    document.getElementById('smarthomePanel').classList.add('active');
+    document.getElementById('btnSmartHome').classList.add('active');
+    ['g1','g2','g3','g4'].forEach(function(id) {
+      document.getElementById(id).style.display = 'none';
+    });
+    shLoadDevices();
+    if (_shPollTimer) clearInterval(_shPollTimer);
+    _shPollTimer = setInterval(shLoadDevices, 2000);
+  }
+}
+
+async function shScan() {
+  var btn = document.getElementById('shScanBtn');
+  if (btn.classList.contains('scanning')) return;
+  btn.classList.add('scanning');
+  btn.textContent = 'Scanning...';
+  document.getElementById('shProgress').style.display = '';
+  try {
+    await fetch(API + '/api/smarthome/scan', {method: 'POST'});
+  } catch(e) {}
+  // Polling will update progress
+}
+
+async function shLoadDevices() {
+  try {
+    var resp = await fetch(API + '/api/smarthome/devices');
+    var data = await resp.json();
+    var btn = document.getElementById('shScanBtn');
+    var prog = document.getElementById('shProgress');
+    var bar = document.getElementById('shProgressBar');
+
+    if (data.scanning) {
+      btn.classList.add('scanning');
+      btn.textContent = 'Scanning... ' + data.progress + '%';
+      prog.style.display = '';
+      bar.style.width = data.progress + '%';
+    } else {
+      btn.classList.remove('scanning');
+      btn.textContent = 'Scan Network';
+      prog.style.display = 'none';
+      bar.style.width = '0%';
+    }
+
+    var devices = data.devices || [];
+    var countEl = document.getElementById('shDeviceCount');
+    countEl.textContent = devices.length ? devices.length + ' device' + (devices.length > 1 ? 's' : '') : '';
+
+    var empty = document.getElementById('shEmpty');
+    var container = document.getElementById('shDevices');
+
+    if (devices.length === 0 && !data.scanning) {
+      empty.style.display = '';
+      container.innerHTML = '';
+      return;
+    }
+    empty.style.display = 'none';
+
+    // Group by type
+    var groups = {};
+    devices.forEach(function(d) {
+      var g = d.type || 'unknown';
+      if (!groups[g]) groups[g] = [];
+      groups[g].push(d);
+    });
+
+    var order = ['switch', 'plug', 'light', 'sensor', 'hub', 'broker', 'unknown'];
+    var icons = {switch:'⚡', plug:'🔌', light:'💡', sensor:'🌡️', hub:'🏠', broker:'📡', unknown:'❓'};
+    var labels = {switch:'Switches', plug:'Plugs', light:'Lights', sensor:'Sensors', hub:'Hubs', broker:'MQTT Brokers', unknown:'Other Devices'};
+
+    var html = '';
+    order.forEach(function(type) {
+      var list = groups[type];
+      if (!list || !list.length) return;
+      html += '<div class="sh-section-title">' + (labels[type] || type) + ' (' + list.length + ')</div>';
+      html += '<div class="sh-grid">';
+      list.forEach(function(d) {
+        var icon = icons[d.type] || '❓';
+        var canToggle = (d.type === 'switch' || d.type === 'plug' || d.type === 'light') &&
+                        (d.brand === 'tasmota' || d.brand === 'shelly' || d.brand === 'kasa' || d.brand === 'sonoff');
+        var powerOn = d.status && d.status.power;
+
+        html += '<div class="sh-card">';
+        html += '<div class="sh-card-top">';
+        html += '<div class="sh-icon ' + d.type + '">' + icon + '</div>';
+        html += '<div class="sh-card-info">';
+        html += '<div class="sh-card-name">' + escHtml(d.name) + '</div>';
+        html += '<div class="sh-card-sub">' + d.ip + ':' + d.port + '</div>';
+        html += '</div>';
+        if (canToggle) {
+          html += '<button class="sh-toggle' + (powerOn ? ' on' : '') + '" onclick="shToggle(\'' + d.id + '\', this)" title="Toggle power"></button>';
+        }
+        html += '</div>';
+        html += '<div class="sh-card-body">';
+        html += '<span class="sh-brand-tag">' + d.brand + '</span>';
+        if (d.model && d.model !== d.brand) {
+          html += '<span class="sh-stat">' + escHtml(d.model) + '</span>';
+        }
+        if (d.firmware) {
+          html += '<span class="sh-stat">FW: ' + escHtml(d.firmware) + '</span>';
+        }
+        if (d.mac) {
+          html += '<span class="sh-stat">' + d.mac + '</span>';
+        }
+        if (d.status) {
+          if (d.status.temperature !== undefined) {
+            html += '<span class="sh-stat"><b>' + d.status.temperature + '°C</b></span>';
+          }
+          if (d.status.humidity !== undefined) {
+            html += '<span class="sh-stat"><b>' + d.status.humidity + '%</b> RH</span>';
+          }
+        }
+        html += '</div>';
+        html += '</div>';
+      });
+      html += '</div>';
+    });
+    container.innerHTML = html;
+  } catch(e) {
+    console.error('shLoadDevices error:', e);
+  }
+}
+
+function escHtml(s) {
+  var d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+async function shToggle(deviceId, btn) {
+  btn.classList.toggle('on');
+  try {
+    var resp = await fetch(API + '/api/smarthome/toggle/' + encodeURIComponent(deviceId), {method:'POST'});
+    var data = await resp.json();
+    if (data.power !== undefined) {
+      btn.classList.toggle('on', data.power);
+    }
+  } catch(e) {
+    btn.classList.toggle('on'); // revert
+  }
+}
 
 // --- Init ---
 loadCameras();

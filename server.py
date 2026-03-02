@@ -16,6 +16,7 @@ from pathlib import Path
 from camera_manager import CameraManager, StreamManager
 from discovery import discover_onvif_cameras, get_rtsp_url_from_onvif
 from face_manager import FaceManager, FaceDetector
+from smart_home import SmartHomeScanner
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,6 +28,7 @@ camera_mgr = CameraManager()
 stream_mgr = StreamManager()
 face_mgr = FaceManager()
 face_detector = FaceDetector(stream_mgr, face_mgr)
+smart_home = SmartHomeScanner()
 
 
 @asynccontextmanager
@@ -341,6 +343,43 @@ async def sighting_image(sighting_id: str):
                 headers={"Cache-Control": "max-age=3600"},
             )
     raise HTTPException(404, "Sighting not found")
+
+
+# --- Smart Home ---
+
+@app.get("/api/smarthome/devices")
+async def smarthome_devices():
+    """List discovered smart home devices."""
+    return {
+        "devices": smart_home.get_devices(),
+        "scanning": smart_home.is_scanning,
+        "progress": smart_home.scan_progress,
+    }
+
+
+@app.post("/api/smarthome/scan")
+async def smarthome_scan():
+    """Start a LAN scan for smart home devices."""
+    started = smart_home.start_scan()
+    return {"started": started, "scanning": smart_home.is_scanning}
+
+
+@app.post("/api/smarthome/toggle/{device_id:path}")
+async def smarthome_toggle(device_id: str):
+    """Toggle a switch/plug device."""
+    result = smart_home.toggle(device_id)
+    if result is None:
+        raise HTTPException(404, "Device not found or toggle not supported")
+    return result
+
+
+@app.get("/api/smarthome/status/{device_id:path}")
+async def smarthome_status(device_id: str):
+    """Refresh and return device status."""
+    result = smart_home.refresh_status(device_id)
+    if result is None:
+        raise HTTPException(404, "Device not found")
+    return result
 
 
 # --- Static Files (Web UI) ---
