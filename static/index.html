@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LAN Camera Viewer</title>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #0a0a0a;
+    color: #e0e0e0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* --- Toolbar --- */
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 16px;
+    background: #1a1a1a;
+    border-bottom: 1px solid #333;
+    flex-shrink: 0;
+  }
+
+  .toolbar h1 {
+    font-size: 16px;
+    font-weight: 600;
+    margin-right: auto;
+    color: #4fc3f7;
+  }
+
+  .toolbar button {
+    padding: 6px 14px;
+    border: 1px solid #444;
+    background: #2a2a2a;
+    color: #ccc;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: all 0.15s;
+  }
+
+  .toolbar button:hover { background: #3a3a3a; color: #fff; }
+  .toolbar button.active { background: #4fc3f7; color: #000; border-color: #4fc3f7; }
+  .toolbar button.primary { background: #2196f3; color: #fff; border-color: #2196f3; }
+  .toolbar button.primary:hover { background: #1976d2; }
+
+  /* --- Grid --- */
+  .grid {
+    flex: 1;
+    display: grid;
+    gap: 2px;
+    padding: 2px;
+    overflow: hidden;
+  }
+
+  .grid.g1 { grid-template-columns: 1fr; }
+  .grid.g2 { grid-template-columns: 1fr 1fr; }
+  .grid.g3 { grid-template-columns: 1fr 1fr 1fr; }
+  .grid.g4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+
+  /* --- Camera Tile --- */
+  .tile {
+    position: relative;
+    background: #111;
+    border-radius: 4px;
+    overflow: hidden;
+    cursor: pointer;
+  }
+
+  .tile video, .tile img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+    background: #000;
+  }
+
+  .tile .label {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    background: rgba(0,0,0,0.7);
+    padding: 3px 8px;
+    border-radius: 3px;
+    font-size: 12px;
+    pointer-events: none;
+  }
+
+  .tile .remove-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: rgba(220,20,20,0.8);
+    border: none;
+    color: #fff;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 24px;
+    text-align: center;
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+
+  .tile:hover .remove-btn { opacity: 1; }
+
+  .tile .offline-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0,0,0,0.75);
+    font-size: 14px;
+    color: #f44;
+  }
+
+  .tile .offline-overlay .dot {
+    width: 10px;
+    height: 10px;
+    background: #f44;
+    border-radius: 50%;
+    margin-right: 8px;
+    animation: blink 1.5s infinite;
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  /* --- Fullscreen tile --- */
+  .tile.fullscreen {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    border-radius: 0;
+  }
+
+  /* --- Empty state --- */
+  .empty-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: #666;
+    font-size: 18px;
+    grid-column: 1 / -1;
+  }
+
+  /* --- Modal --- */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+  }
+
+  .modal-overlay.open { display: flex; }
+
+  .modal {
+    background: #1e1e1e;
+    border: 1px solid #444;
+    border-radius: 8px;
+    padding: 24px;
+    width: 420px;
+    max-width: 90vw;
+  }
+
+  .modal h2 {
+    font-size: 18px;
+    margin-bottom: 16px;
+    color: #4fc3f7;
+  }
+
+  .modal label {
+    display: block;
+    font-size: 13px;
+    margin-bottom: 4px;
+    color: #aaa;
+  }
+
+  .modal input, .modal select {
+    width: 100%;
+    padding: 8px 10px;
+    margin-bottom: 12px;
+    border: 1px solid #444;
+    border-radius: 4px;
+    background: #2a2a2a;
+    color: #eee;
+    font-size: 14px;
+  }
+
+  .modal .actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 8px;
+  }
+
+  .modal .actions button {
+    padding: 8px 18px;
+    border: 1px solid #444;
+    background: #333;
+    color: #ccc;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+  }
+
+  .modal .actions button.primary {
+    background: #2196f3;
+    color: #fff;
+    border-color: #2196f3;
+  }
+
+  /* --- Discover results --- */
+  .discover-list {
+    max-height: 300px;
+    overflow-y: auto;
+    margin-bottom: 12px;
+  }
+
+  .discover-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: #2a2a2a;
+    border-radius: 4px;
+    margin-bottom: 6px;
+  }
+
+  .discover-item span { font-size: 13px; }
+  .discover-item button {
+    padding: 4px 12px;
+    font-size: 12px;
+    background: #4fc3f7;
+    border: none;
+    color: #000;
+    border-radius: 3px;
+    cursor: pointer;
+  }
+
+  .spinner {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 2px solid #444;
+    border-top-color: #4fc3f7;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<!-- Toolbar -->
+<div class="toolbar">
+  <h1>LAN Camera Viewer</h1>
+
+  <button onclick="setGrid(1)" id="g1">1x1</button>
+  <button onclick="setGrid(2)" id="g2" class="active">2x2</button>
+  <button onclick="setGrid(3)" id="g3">3x3</button>
+  <button onclick="setGrid(4)" id="g4">4x4</button>
+
+  <button class="primary" onclick="openAddModal()">+ Add Camera</button>
+  <button onclick="openDiscoverModal()">Discover</button>
+</div>
+
+<!-- Camera Grid -->
+<div class="grid g2" id="grid"></div>
+
+<!-- Add Camera Modal -->
+<div class="modal-overlay" id="addModal">
+  <div class="modal">
+    <h2>Add Camera</h2>
+    <label>Camera Name</label>
+    <input type="text" id="camName" placeholder="e.g. Front Door">
+    <label>Stream URL</label>
+    <input type="text" id="camUrl" placeholder="rtsp://192.168.1.100:554/stream or http://ip:port/video">
+    <label>Type</label>
+    <select id="camType">
+      <option value="rtsp">RTSP (IP Camera)</option>
+      <option value="mjpeg">MJPEG (Webcam Agent)</option>
+    </select>
+    <div class="actions">
+      <button onclick="closeAddModal()">Cancel</button>
+      <button class="primary" onclick="addCamera()">Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- Discover Modal -->
+<div class="modal-overlay" id="discoverModal">
+  <div class="modal">
+    <h2>Discover Cameras on LAN</h2>
+    <div id="discoverResults">
+      <p style="color:#888">Click "Scan" to search for ONVIF cameras on your network.</p>
+    </div>
+    <div class="actions">
+      <button onclick="closeDiscoverModal()">Close</button>
+      <button class="primary" onclick="runDiscovery()">Scan</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';
+let cameras = [];
+let gridSize = 2;
+let hlsInstances = {};
+let discoveredCameras = [];
+
+// --- Grid ---
+function setGrid(n) {
+  gridSize = n;
+  document.querySelectorAll('.toolbar button[id^="g"]').forEach(function(b) { b.classList.remove('active'); });
+  document.getElementById('g' + n).classList.add('active');
+  const grid = document.getElementById('grid');
+  grid.className = 'grid g' + n;
+}
+
+// --- Load cameras ---
+async function loadCameras() {
+  try {
+    const res = await fetch(API + '/api/cameras');
+    cameras = await res.json();
+  } catch (e) {
+    console.error('Failed to load cameras:', e);
+    cameras = [];
+  }
+  renderGrid();
+}
+
+// --- Render grid using safe DOM methods ---
+function renderGrid() {
+  const grid = document.getElementById('grid');
+
+  // Destroy old HLS instances
+  Object.values(hlsInstances).forEach(function(h) { h.destroy(); });
+  hlsInstances = {};
+
+  // Clear grid
+  while (grid.firstChild) grid.removeChild(grid.firstChild);
+
+  if (cameras.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = 'No cameras added. Click "+ Add Camera" or "Discover" to get started.';
+    grid.appendChild(empty);
+    return;
+  }
+
+  cameras.forEach(function(cam) {
+    const tile = document.createElement('div');
+    tile.className = 'tile';
+    tile.id = 'tile-' + cam.id;
+    tile.addEventListener('click', function() { toggleFullscreen(cam.id); });
+
+    // Label
+    const label = document.createElement('div');
+    label.className = 'label';
+    label.textContent = cam.name;
+    tile.appendChild(label);
+
+    // Remove button
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'remove-btn';
+    removeBtn.textContent = '\u00D7';
+    removeBtn.title = 'Remove';
+    removeBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      removeCam(cam.id);
+    });
+    tile.appendChild(removeBtn);
+
+    // Media element
+    if (cam.type === 'mjpeg') {
+      const img = document.createElement('img');
+      img.src = cam.stream_url;
+      img.alt = cam.name;
+      img.addEventListener('error', function() {
+        this.style.display = 'none';
+        showOffline(cam.id);
+      });
+      tile.appendChild(img);
+    } else {
+      const video = document.createElement('video');
+      video.id = 'vid-' + cam.id;
+      video.muted = true;
+      video.autoplay = true;
+      video.playsInline = true;
+      tile.appendChild(video);
+    }
+
+    grid.appendChild(tile);
+  });
+
+  // Attach HLS players for RTSP cameras
+  cameras.filter(function(c) { return c.type === 'rtsp'; }).forEach(function(cam) {
+    const video = document.getElementById('vid-' + cam.id);
+    if (!video) return;
+    attachHLS(cam, video);
+  });
+}
+
+function attachHLS(cam, video) {
+  const url = cam.stream_url;
+
+  if (Hls.isSupported()) {
+    const hls = new Hls({
+      liveSyncDurationCount: 2,
+      liveMaxLatencyDurationCount: 5,
+      enableWorker: true,
+    });
+    hls.loadSource(url);
+    hls.attachMedia(video);
+    hls.on(Hls.Events.MANIFEST_PARSED, function() { video.play(); });
+    hls.on(Hls.Events.ERROR, function(event, data) {
+      if (data.fatal) {
+        showOffline(cam.id);
+        setTimeout(function() {
+          hls.loadSource(url);
+          hls.attachMedia(video);
+          hideOffline(cam.id);
+        }, 10000);
+      }
+    });
+    hlsInstances[cam.id] = hls;
+  } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    video.src = url;
+    video.play();
+  }
+}
+
+function showOffline(camId) {
+  const tile = document.getElementById('tile-' + camId);
+  if (!tile || tile.querySelector('.offline-overlay')) return;
+  const overlay = document.createElement('div');
+  overlay.className = 'offline-overlay';
+  const dot = document.createElement('div');
+  dot.className = 'dot';
+  overlay.appendChild(dot);
+  const text = document.createTextNode(' Offline \u2014 Reconnecting...');
+  overlay.appendChild(text);
+  tile.appendChild(overlay);
+}
+
+function hideOffline(camId) {
+  const tile = document.getElementById('tile-' + camId);
+  if (!tile) return;
+  const overlay = tile.querySelector('.offline-overlay');
+  if (overlay) overlay.remove();
+}
+
+// --- Fullscreen ---
+function toggleFullscreen(camId) {
+  const tile = document.getElementById('tile-' + camId);
+  if (!tile) return;
+  tile.classList.toggle('fullscreen');
+}
+
+// --- Add camera ---
+function openAddModal() {
+  document.getElementById('addModal').classList.add('open');
+  document.getElementById('camName').focus();
+}
+
+function closeAddModal() {
+  document.getElementById('addModal').classList.remove('open');
+  document.getElementById('camName').value = '';
+  document.getElementById('camUrl').value = '';
+}
+
+async function addCamera() {
+  const name = document.getElementById('camName').value.trim();
+  const url = document.getElementById('camUrl').value.trim();
+  const type = document.getElementById('camType').value;
+
+  if (!name || !url) { alert('Please fill in all fields.'); return; }
+
+  try {
+    await fetch(API + '/api/cameras', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name, url: url, type: type }),
+    });
+    closeAddModal();
+    loadCameras();
+  } catch (e) {
+    alert('Failed to add camera: ' + e.message);
+  }
+}
+
+// --- Remove camera ---
+async function removeCam(camId) {
+  if (!confirm('Remove this camera?')) return;
+  try {
+    await fetch(API + '/api/cameras/' + camId, { method: 'DELETE' });
+    loadCameras();
+  } catch (e) {
+    alert('Failed to remove: ' + e.message);
+  }
+}
+
+// --- Discover ---
+function openDiscoverModal() {
+  document.getElementById('discoverModal').classList.add('open');
+}
+
+function closeDiscoverModal() {
+  document.getElementById('discoverModal').classList.remove('open');
+}
+
+async function runDiscovery() {
+  const container = document.getElementById('discoverResults');
+  // Show loading
+  while (container.firstChild) container.removeChild(container.firstChild);
+  const loadingP = document.createElement('p');
+  const spinner = document.createElement('span');
+  spinner.className = 'spinner';
+  loadingP.appendChild(spinner);
+  loadingP.appendChild(document.createTextNode(' Scanning network...'));
+  container.appendChild(loadingP);
+
+  try {
+    const res = await fetch(API + '/api/discover', { method: 'POST' });
+    const results = await res.json();
+    discoveredCameras = results;
+
+    while (container.firstChild) container.removeChild(container.firstChild);
+
+    if (results.length === 0) {
+      const noResult = document.createElement('p');
+      noResult.style.color = '#888';
+      noResult.textContent = 'No ONVIF cameras found on the network.';
+      container.appendChild(noResult);
+      return;
+    }
+
+    const list = document.createElement('div');
+    list.className = 'discover-list';
+
+    results.forEach(function(cam, i) {
+      const item = document.createElement('div');
+      item.className = 'discover-item';
+
+      const info = document.createElement('span');
+      const nameText = document.createTextNode(cam.name);
+      info.appendChild(nameText);
+      const br = document.createElement('br');
+      info.appendChild(br);
+      const urlSmall = document.createElement('small');
+      urlSmall.style.color = '#888';
+      urlSmall.textContent = cam.rtsp_url;
+      info.appendChild(urlSmall);
+
+      const addBtn = document.createElement('button');
+      addBtn.textContent = 'Add';
+      addBtn.addEventListener('click', function() { addDiscovered(i); });
+
+      item.appendChild(info);
+      item.appendChild(addBtn);
+      list.appendChild(item);
+    });
+
+    container.appendChild(list);
+  } catch (e) {
+    while (container.firstChild) container.removeChild(container.firstChild);
+    const errP = document.createElement('p');
+    errP.style.color = '#f44';
+    errP.textContent = 'Discovery failed: ' + e.message;
+    container.appendChild(errP);
+  }
+}
+
+async function addDiscovered(index) {
+  const cam = discoveredCameras[index];
+  if (!cam) return;
+
+  try {
+    await fetch(API + '/api/cameras', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: cam.name, url: cam.rtsp_url, type: 'rtsp' }),
+    });
+    closeDiscoverModal();
+    loadCameras();
+  } catch (e) {
+    alert('Failed to add: ' + e.message);
+  }
+}
+
+// --- Keyboard ---
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    document.querySelectorAll('.tile.fullscreen').forEach(function(t) { t.classList.remove('fullscreen'); });
+    closeAddModal();
+    closeDiscoverModal();
+  }
+});
+
+// --- Auto-refresh MJPEG on error ---
+setInterval(function() {
+  cameras.filter(function(c) { return c.type === 'mjpeg'; }).forEach(function(cam) {
+    const tile = document.getElementById('tile-' + cam.id);
+    if (!tile) return;
+    const img = tile.querySelector('img');
+    if (img && img.style.display === 'none') {
+      img.src = cam.stream_url + '?t=' + Date.now();
+      img.style.display = '';
+      hideOffline(cam.id);
+    }
+  });
+}, 10000);
+
+// --- Init ---
+loadCameras();
+</script>
+</body>
+</html>

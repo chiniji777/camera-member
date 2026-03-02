@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+streams/
+cameras.json
+.env
+*.egg-info/
