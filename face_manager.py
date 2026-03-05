@@ -43,6 +43,19 @@ SFACE_MODEL = "face_recognition_sface_2021dec.onnx"
 YUNET_URL = f"https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/{YUNET_MODEL}"
 SFACE_URL = f"https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/{SFACE_MODEL}"
 
+# YOLOv4-tiny for pet/object detection (COCO: dog=16, cat=15, person=0)
+YOLO_WEIGHTS = "yolov4-tiny.weights"
+YOLO_CFG = "yolov4-tiny.cfg"
+YOLO_WEIGHTS_URL = "https://github.com/AlexeyAB/darknet/releases/download/yolov4/yolov4-tiny.weights"
+YOLO_CFG_URL = "https://raw.githubusercontent.com/AlexeyAB/darknet/master/cfg/yolov4-tiny.cfg"
+
+# COCO class IDs we care about
+COCO_PERSON = 0
+COCO_CAT = 15
+COCO_DOG = 16
+COCO_PET_IDS = {COCO_CAT, COCO_DOG}
+COCO_NAMES = {COCO_PERSON: "person", COCO_CAT: "cat", COCO_DOG: "dog"}
+
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -341,14 +354,19 @@ class FaceDetector:
     def __init__(self, stream_mgr, face_mgr: FaceManager):
         self._stream_mgr = stream_mgr
         self._face_mgr = face_mgr
+        self._layout_mgr = None  # set via set_layout_manager()
         self._running = False
         self._threads: dict[str, threading.Thread] = {}
         self._detector = None
         self._recognizer = None
         self._hog = None
+        self._yolo_net = None
+        self._yolo_output_layers = None
         self._model_lock = threading.Lock()
         self._last_sighting: dict[tuple[str, str], float] = {}
         self._active_detections: dict[str, list[dict]] = {}  # cam_id -> detections
+        # Pet detection results
+        self._active_pets: dict[str, list[dict]] = {}  # cam_id -> [{bbox, type, confidence}]
         # Outfit color tracking — resets daily
         self._outfit_data: dict[str, dict] = {}  # face_id -> {"date", "shirt_color", "shirt_hex", "pants_color", "pants_hex"}
         self._outfit_date: str = ""  # current tracking date
@@ -356,6 +374,10 @@ class FaceDetector:
         self._load_outfit_log()
         # Body tracking — persons with bboxes
         self._tracked_persons: dict[str, list[dict]] = {}  # cam_id -> [{bbox, name, ...}]
+
+    def set_layout_manager(self, layout_mgr):
+        """Link to LayoutManager to read detection toggle/sensitivity settings."""
+        self._layout_mgr = layout_mgr
 
     def _ensure_models(self):
         _download_model(YUNET_URL, MODELS_DIR / YUNET_MODEL)
@@ -381,7 +403,27 @@ class FaceDetector:
             # HOG person detector (built-in, no download needed)
             self._hog = cv2.HOGDescriptor()
             self._hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
-            logger.info("Face detection + body detection models loaded")
+
+            # YOLOv4-tiny for pet detection
+            self._init_yolo()
+
+            logger.info("Face + body + pet detection models loaded")
+
+    def _init_yolo(self):
+        """Load YOLOv4-tiny model for pet/object detection."""
+        weights_path = MODELS_DIR / YOLO_WEIGHTS
+        cfg_path = MODELS_DIR / YOLO_CFG
+        _download_model(YOLO_WEIGHTS_URL, weights_path)
+        _download_model(YOLO_CFG_URL, cfg_path)
+        try:
+            self._yolo_net = cv2.dnn.readNet(str(weights_path), str(cfg_path))
+            layer_names = self._yolo_net.getLayerNames()
+            out_indices = self._yolo_net.getUnconnectedOutLayers()
+            self._yolo_output_layers = [layer_names[i - 1] for i in out_indices.flatten()]
+            logger.info("YOLOv4-tiny loaded for pet detection")
+        except Exception as e:
+            logger.error(f"Failed to load YOLO model: {e}")
+            self._yolo_net = None
 
     def start(self, camera_ids: list[str]):
         self._running = True
@@ -634,6 +676,77 @@ class FaceDetector:
             result.extend(persons)
         return result
 
+    def get_active_pets(self, cam_id: str = None) -> list[dict]:
+        """Return currently detected pets with bounding boxes."""
+        if cam_id:
+            return list(self._active_pets.get(cam_id, []))
+        result = []
+        for pets in self._active_pets.values():
+            result.extend(pets)
+        return result
+
+    def _detect_pets(self, cam_id: str, img: np.ndarray) -> list[dict]:
+        """Run YOLOv4-tiny to detect cats and dogs. Returns list of detections."""
+        if self._yolo_net is None:
+            return []
+
+        h, w = img.shape[:2]
+
+        # Sensitivity maps to confidence threshold: sens=0 → 0.7, sens=100 → 0.15
+        sens = 50
+        if self._layout_mgr:
+            sens = self._layout_mgr.get_sensitivity("pet")
+        conf_threshold = 0.7 - sens * 0.0055  # range: 0.7 (sens=0) to 0.15 (sens=100)
+        conf_threshold = max(0.1, conf_threshold)
+
+        # Prepare input blob (416x416)
+        blob = cv2.dnn.blobFromImage(img, 1 / 255.0, (416, 416), swapRB=True, crop=False)
+        self._yolo_net.setInput(blob)
+        outputs = self._yolo_net.forward(self._yolo_output_layers)
+
+        pets = []
+        boxes = []
+        confidences = []
+        class_ids = []
+
+        for output in outputs:
+            for detection in output:
+                scores = detection[5:]
+                class_id = int(np.argmax(scores))
+                confidence = float(scores[class_id])
+
+                if class_id not in COCO_PET_IDS:
+                    continue
+                if confidence < conf_threshold:
+                    continue
+
+                center_x = int(detection[0] * w)
+                center_y = int(detection[1] * h)
+                bw = int(detection[2] * w)
+                bh = int(detection[3] * h)
+                x = center_x - bw // 2
+                y = center_y - bh // 2
+
+                boxes.append([x, y, bw, bh])
+                confidences.append(confidence)
+                class_ids.append(class_id)
+
+        # NMS to remove duplicates
+        if boxes:
+            indices = cv2.dnn.NMSBoxes(boxes, confidences, conf_threshold, 0.4)
+            for i in indices.flatten():
+                x, y, bw, bh = boxes[i]
+                pets.append({
+                    "bbox": [round(x / w, 4), round(y / h, 4),
+                             round(bw / w, 4), round(bh / h, 4)],
+                    "type": COCO_NAMES.get(class_ids[i], "pet"),
+                    "confidence": round(confidences[i], 3),
+                    "camera_id": cam_id,
+                })
+
+        self._active_pets[cam_id] = pets
+        return pets
+
     def _detect_loop(self, cam_id: str):
         # Wait for first frame to be available
         for _ in range(20):
@@ -650,28 +763,36 @@ class FaceDetector:
                 logger.error(f"Face detection error on {cam_id}: {e}")
             time.sleep(self.DETECT_INTERVAL)
 
+    def _is_enabled(self, feature: str) -> bool:
+        """Check if a detection feature is enabled via layout manager."""
+        if self._layout_mgr:
+            return self._layout_mgr.is_detection_enabled(feature)
+        # Default: face and human on, others off
+        return feature in ("face", "human")
+
     def _process_frame(self, cam_id: str, frame_bytes: bytes):
         # Daily outfit reset check
         self._check_daily_reset()
 
         # Auto-ignore unknown faces that have been sitting for 30+ seconds
-        now_dt = _local_now()
-        changed = False
-        with self._face_mgr._lock:
-            for face in list(self._face_mgr.faces.values()):
-                if face.status == "unknown":
-                    try:
-                        first = datetime.fromisoformat(face.first_seen)
-                        if first.tzinfo is None:
-                            first = first.astimezone()
-                        if (now_dt - first).total_seconds() >= self.AUTO_IGNORE_SECONDS:
-                            face.status = "ignored"
-                            changed = True
-                            logger.info(f"Auto-ignored face {face.id} (unlabeled for {self.AUTO_IGNORE_SECONDS}s)")
-                    except Exception:
-                        pass
-            if changed:
-                self._face_mgr._save_faces()
+        if self._is_enabled("face"):
+            now_dt = _local_now()
+            changed = False
+            with self._face_mgr._lock:
+                for face in list(self._face_mgr.faces.values()):
+                    if face.status == "unknown":
+                        try:
+                            first = datetime.fromisoformat(face.first_seen)
+                            if first.tzinfo is None:
+                                first = first.astimezone()
+                            if (now_dt - first).total_seconds() >= self.AUTO_IGNORE_SECONDS:
+                                face.status = "ignored"
+                                changed = True
+                                logger.info(f"Auto-ignored face {face.id} (unlabeled for {self.AUTO_IGNORE_SECONDS}s)")
+                        except Exception:
+                            pass
+                if changed:
+                    self._face_mgr._save_faces()
 
         # Decode JPEG
         nparr = np.frombuffer(frame_bytes, np.uint8)
@@ -680,11 +801,31 @@ class FaceDetector:
             return
 
         h, w = img.shape[:2]
-        self._detector.setInputSize((w, h))
+
+        # ── Phase 0: Pet detection (YOLO) ──
+        if self._is_enabled("pet"):
+            self._detect_pets(cam_id, img)
+        else:
+            self._active_pets.pop(cam_id, None)
 
         # ── Phase 1: Face detection ──
         frame_faces = []  # collect face results for body linking
-        _, faces = self._detector.detect(img)
+
+        if not self._is_enabled("face"):
+            # Skip face detection entirely
+            self._active_detections.pop(cam_id, None)
+        else:
+            self._detector.setInputSize((w, h))
+
+        faces = None
+        if self._is_enabled("face"):
+            # Apply sensitivity: map 0-100 to score_threshold 0.9-0.3
+            sens = 50
+            if self._layout_mgr:
+                sens = self._layout_mgr.get_sensitivity("face")
+            face_score = 0.9 - sens * 0.006  # range: 0.9 (sens=0) to 0.3 (sens=100)
+            self._detector.setScoreThreshold(max(0.2, face_score))
+            _, faces = self._detector.detect(img)
 
         if faces is not None:
             for face_data in faces:
@@ -760,16 +901,28 @@ class FaceDetector:
                         "name": new_face.name or "New Customer", "confidence": 0,
                     })
 
-        # ── Phase 2: Body detection (HOG) ──
-        detect_h = 320
-        scale_factor = h / detect_h
-        detect_w = int(w * detect_h / h)
-        small_frame = cv2.resize(img, (detect_w, detect_h))
+        # ── Phase 2: Body detection (HOG) — conditional on human detection toggle ──
+        bodies = None
+        weights = []
+        if self._is_enabled("human"):
+            detect_h = 320
+            scale_factor = h / detect_h
+            detect_w = int(w * detect_h / h)
+            small_frame = cv2.resize(img, (detect_w, detect_h))
 
-        bodies, weights = self._hog.detectMultiScale(
-            small_frame, winStride=(8, 8), padding=(4, 4), scale=1.05,
-            hitThreshold=0.3,
-        )
+            # Apply sensitivity: map 0-100 to hitThreshold 0.8-0.0
+            sens = 50
+            if self._layout_mgr:
+                sens = self._layout_mgr.get_sensitivity("human")
+            hit_thresh = 0.8 - sens * 0.008  # range: 0.8 (sens=0) to 0.0 (sens=100)
+
+            bodies, weights = self._hog.detectMultiScale(
+                small_frame, winStride=(8, 8), padding=(4, 4), scale=1.05,
+                hitThreshold=max(0.0, hit_thresh),
+            )
+        else:
+            detect_h = 320
+            scale_factor = h / detect_h
 
         tracked = []
         used_faces = set()

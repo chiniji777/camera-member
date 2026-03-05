@@ -842,6 +842,178 @@
     background: #2a2a2a;
     color: #888;
   }
+
+  /* --- Spotlight Layout --- */
+  .layout-container.spotlight {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    flex: 1;
+    overflow: hidden;
+  }
+  .big-zone {
+    flex: 2.5;
+    display: grid;
+    gap: 2px;
+    grid-template-columns: 1fr;
+  }
+  .spotlight-2-14 .big-zone { grid-template-columns: 1fr 1fr; }
+  .small-zone {
+    flex: 1;
+    display: grid;
+    gap: 2px;
+    grid-template-columns: 1fr;
+    grid-auto-rows: 1fr;
+    overflow-y: auto;
+  }
+  .spotlight-1-7 .small-zone { grid-template-columns: repeat(2, 1fr); }
+  .spotlight-2-14 .small-zone { grid-template-columns: repeat(2, 1fr); }
+
+  /* --- Empty Slot --- */
+  .tile.empty-slot {
+    border: 2px dashed #444;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 8px;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    min-height: 80px;
+  }
+  .tile.empty-slot:hover { border-color: #4fc3f7; background: rgba(79,195,247,0.05); }
+  .tile.empty-slot .plus-icon {
+    font-size: 32px;
+    color: #555;
+    line-height: 1;
+  }
+  .tile.empty-slot .slot-label {
+    font-size: 11px;
+    color: #666;
+  }
+
+  /* --- Drag & Drop --- */
+  .tile.drag-over { border: 2px solid #4fc3f7 !important; background: rgba(79,195,247,0.1); }
+  .tile.dragging { opacity: 0.5; }
+
+  /* --- Motion Badge --- */
+  .tile .motion-badge {
+    position: absolute;
+    top: 8px;
+    right: 40px;
+    background: #f44336;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 3px;
+    opacity: 0;
+    transition: opacity 0.3s;
+    pointer-events: none;
+    z-index: 10;
+  }
+  .tile .motion-badge.active { opacity: 1; }
+
+  /* --- Detection Settings Panel --- */
+  .detect-panel {
+    position: fixed;
+    top: 50px;
+    right: 16px;
+    background: #1e1e1e;
+    border: 1px solid #444;
+    border-radius: 8px;
+    padding: 16px;
+    width: 300px;
+    z-index: 300;
+    display: none;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+  .detect-panel.open { display: block; }
+  .detect-panel h3 {
+    font-size: 14px;
+    color: #4fc3f7;
+    margin-bottom: 12px;
+  }
+  .detect-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid #2a2a2a;
+  }
+  .detect-row:last-child { border-bottom: none; }
+  .detect-row .detect-name {
+    flex: 1;
+    font-size: 13px;
+    color: #ccc;
+    text-transform: capitalize;
+  }
+  .detect-toggle {
+    width: 40px;
+    height: 22px;
+    border-radius: 11px;
+    border: none;
+    cursor: pointer;
+    position: relative;
+    transition: background 0.2s;
+    background: #333;
+    flex-shrink: 0;
+  }
+  .detect-toggle.on { background: #4caf50; }
+  .detect-toggle::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform 0.2s;
+  }
+  .detect-toggle.on::after { transform: translateX(18px); }
+  .detect-sensitivity {
+    width: 60px;
+    accent-color: #4fc3f7;
+  }
+  .detect-sens-val {
+    font-size: 11px;
+    color: #888;
+    width: 28px;
+    text-align: right;
+  }
+
+  /* --- Slot Assignment Dropdown --- */
+  .slot-assign-dropdown {
+    position: fixed;
+    background: #1e1e1e;
+    border: 1px solid #444;
+    border-radius: 6px;
+    padding: 8px 0;
+    min-width: 200px;
+    z-index: 400;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    max-height: 300px;
+    overflow-y: auto;
+  }
+  .slot-assign-dropdown .dd-item {
+    padding: 8px 14px;
+    font-size: 13px;
+    color: #ccc;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .slot-assign-dropdown .dd-item:hover { background: #2a2a2a; }
+  .slot-assign-dropdown .dd-item.disabled {
+    color: #555;
+    cursor: default;
+  }
+  .slot-assign-dropdown .dd-item.disabled:hover { background: transparent; }
+  .slot-assign-dropdown .dd-divider {
+    height: 1px;
+    background: #333;
+    margin: 4px 0;
+  }
 </style>
 </head>
 <body>
@@ -850,10 +1022,15 @@
 <div class="toolbar">
   <h1>LAN Camera Viewer</h1>
 
-  <button onclick="setGrid(1)" id="g1">1x1</button>
-  <button onclick="setGrid(2)" id="g2" class="active">2x2</button>
-  <button onclick="setGrid(3)" id="g3">3x3</button>
-  <button onclick="setGrid(4)" id="g4">4x4</button>
+  <button onclick="switchLayout('1x1')" id="lay-1x1" class="layout-btn">1x1</button>
+  <button onclick="switchLayout('2x2')" id="lay-2x2" class="layout-btn active">2x2</button>
+  <button onclick="switchLayout('3x3')" id="lay-3x3" class="layout-btn">3x3</button>
+  <button onclick="switchLayout('4x4')" id="lay-4x4" class="layout-btn">4x4</button>
+  <button onclick="switchLayout('1+7')" id="lay-1+7" class="layout-btn">1+7</button>
+  <button onclick="switchLayout('2+14')" id="lay-2+14" class="layout-btn">2+14</button>
+
+  <button onclick="toggleMotionMode()" id="btnMotionMode" title="Motion mode: manual">Manual</button>
+  <button onclick="toggleDetectPanel()" id="btnDetect">Detection</button>
 
   <button onclick="openCustomerModal()">Customers</button>
   <button onclick="toggleSmartHome()" id="btnSmartHome">Smart Home</button>
@@ -861,8 +1038,14 @@
   <button onclick="openDiscoverModal()">Discover</button>
 </div>
 
-<!-- Camera Grid -->
-<div class="grid g2" id="grid"></div>
+<!-- Detection Settings Panel -->
+<div class="detect-panel" id="detectPanel">
+  <h3>Detection Settings</h3>
+  <div id="detectRows"></div>
+</div>
+
+<!-- Layout Container (grid or spotlight) -->
+<div class="grid g2" id="layoutContainer"></div>
 
 <!-- Smart Home Panel (hidden by default, replaces grid when active) -->
 <div class="smarthome-panel" id="smarthomePanel">
@@ -955,35 +1138,25 @@
 <script>
 const API = '';
 let cameras = [];
-let gridSize = 2;
 let discoveredCameras = [];
 
-// --- Grid ---
-var userSetGrid = false; // true once user clicks a grid button manually
+// --- Layout state ---
+var layoutConfig = null;   // full config from /api/layout
+var activeLayout = '2x2';
+var motionMode = 'manual';
+var _motionWs = null;
+var _motionTimers = {};
+var _dragData = null;
+var _assignDropdown = null;
 
-function setGrid(n) {
-  gridSize = n;
-  userSetGrid = true;
-  document.querySelectorAll('.toolbar button[id^="g"]').forEach(function(b) { b.classList.remove('active'); });
-  document.getElementById('g' + n).classList.add('active');
-  const grid = document.getElementById('grid');
-  grid.className = 'grid g' + n;
-}
-
-function autoGrid(count) {
-  if (userSetGrid) return; // user chose manually, don't override
-  var n;
-  if (count <= 1) n = 1;
-  else if (count <= 4) n = 2;
-  else if (count <= 9) n = 3;
-  else n = 4;
-  if (n !== gridSize) {
-    gridSize = n;
-    document.querySelectorAll('.toolbar button[id^="g"]').forEach(function(b) { b.classList.remove('active'); });
-    document.getElementById('g' + n).classList.add('active');
-    document.getElementById('grid').className = 'grid g' + n;
-  }
-}
+var LAYOUT_DEFS = {
+  '1x1':  {type:'grid', cols:1, total:1},
+  '2x2':  {type:'grid', cols:2, total:4},
+  '3x3':  {type:'grid', cols:3, total:9},
+  '4x4':  {type:'grid', cols:4, total:16},
+  '1+7':  {type:'spotlight', big:1, small:7},
+  '2+14': {type:'spotlight', big:2, small:14},
+};
 
 // --- Load cameras ---
 async function loadCameras() {
@@ -994,8 +1167,6 @@ async function loadCameras() {
     console.error('Failed to load cameras:', e);
     cameras = [];
   }
-  autoGrid(cameras.length);
-  renderGrid();
 }
 
 // Poll for new cameras every 5s
@@ -1005,86 +1176,509 @@ setInterval(function() {
     var newIds = newCams.map(function(c) { return c.id; }).sort().join(',');
     if (newIds !== oldIds) {
       cameras = newCams;
-      autoGrid(cameras.length);
-      renderGrid();
+      renderLayout();
     }
   }).catch(function() {});
 }, 5000);
 
-// --- Render grid ---
-function renderGrid() {
-  const grid = document.getElementById('grid');
-  while (grid.firstChild) grid.removeChild(grid.firstChild);
+// --- Layout Management ---
+async function loadLayout() {
+  try {
+    var res = await fetch(API + '/api/layout');
+    layoutConfig = await res.json();
+    activeLayout = layoutConfig.active_layout || '2x2';
+    motionMode = layoutConfig.motion_mode || 'manual';
+    // Update toolbar buttons
+    document.querySelectorAll('.layout-btn').forEach(function(b) { b.classList.remove('active'); });
+    var btn = document.getElementById('lay-' + activeLayout);
+    if (btn) btn.classList.add('active');
+    updateMotionBtn();
+    renderLayout();
+    renderDetectPanel();
+  } catch (e) {
+    console.error('Failed to load layout:', e);
+  }
+}
 
-  if (cameras.length === 0) {
-    const empty = document.createElement('div');
+async function switchLayout(id) {
+  if (!LAYOUT_DEFS[id]) return;
+  try {
+    await fetch(API + '/api/layout/active', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({layout_id: id})
+    });
+    activeLayout = id;
+    document.querySelectorAll('.layout-btn').forEach(function(b) { b.classList.remove('active'); });
+    var btn = document.getElementById('lay-' + id);
+    if (btn) btn.classList.add('active');
+    // Reload full config to get correct slots
+    await loadLayout();
+  } catch (e) {
+    console.error('Failed to switch layout:', e);
+  }
+}
+
+function renderLayout() {
+  var container = document.getElementById('layoutContainer');
+  if (!container) return;
+  while (container.firstChild) container.removeChild(container.firstChild);
+
+  if (!layoutConfig) {
+    container.className = 'grid g2';
+    var empty = document.createElement('div');
     empty.className = 'empty-state';
-    empty.textContent = 'No cameras added. Click "+ Add Camera" or "Discover" to get started.';
-    grid.appendChild(empty);
+    empty.textContent = 'Loading...';
+    container.appendChild(empty);
     return;
   }
 
-  cameras.forEach(function(cam) {
-    const tile = document.createElement('div');
-    tile.className = 'tile';
-    tile.id = 'tile-' + cam.id;
-    tile.addEventListener('click', function() { toggleFullscreen(cam.id); });
+  var def = LAYOUT_DEFS[activeLayout];
+  if (!def) return;
 
-    // Label
-    const label = document.createElement('div');
-    label.className = 'label';
-    label.textContent = cam.name;
-    tile.appendChild(label);
+  var layoutData = layoutConfig.layouts[activeLayout];
+  if (!layoutData) return;
 
-    // Remove button
-    const removeBtn = document.createElement('button');
-    removeBtn.className = 'remove-btn';
-    removeBtn.textContent = '\u00D7';
-    removeBtn.title = 'Remove';
-    removeBtn.addEventListener('click', function(e) {
-      e.stopPropagation();
-      removeCam(cam.id);
+  if (def.type === 'grid') {
+    container.className = 'grid g' + def.cols;
+    var slots = layoutData.slots || [];
+    slots.forEach(function(slot, i) {
+      container.appendChild(createSlotTile(slot, 'slots', i));
     });
-    tile.appendChild(removeBtn);
-
-    // Quality toggle button (only for cameras with switchable channels)
-    if (cam.can_switch_quality) {
-      var isHD = cam.quality === 'high';
-      var qBtn = document.createElement('button');
-      qBtn.className = 'quality-btn' + (isHD ? ' hd' : '');
-      qBtn.textContent = isHD ? 'HD' : 'SD';
-      qBtn.title = isHD ? '2560x1440 — Click for SD' : '768x432 — Click for HD';
-      qBtn.addEventListener('click', function(e) {
-        e.stopPropagation();
-        switchQuality(cam.id, cam.quality);
-      });
-      tile.appendChild(qBtn);
-    }
-
-    // All cameras use <img> — both RTSP (MJPEG via server) and webcam agents
-    var img = document.createElement('img');
-    img.src = cam.stream_url;
-    img.alt = cam.name;
-    img.addEventListener('error', function() {
-      this.style.display = 'none';
-      showOffline(cam.id);
+  } else {
+    // Spotlight layout
+    container.className = 'layout-container spotlight spotlight-' + activeLayout.replace('+', '-');
+    var bigZone = document.createElement('div');
+    bigZone.className = 'big-zone';
+    (layoutData.big || []).forEach(function(slot, i) {
+      bigZone.appendChild(createSlotTile(slot, 'big', i));
     });
-    tile.appendChild(img);
+    container.appendChild(bigZone);
 
-    // Tracking canvas overlay
-    var canvas = document.createElement('canvas');
-    canvas.className = 'tracking-canvas';
-    canvas.id = 'track-' + cam.id;
-    tile.appendChild(canvas);
+    var smallZone = document.createElement('div');
+    smallZone.className = 'small-zone';
+    (layoutData.small || []).forEach(function(slot, i) {
+      smallZone.appendChild(createSlotTile(slot, 'small', i));
+    });
+    container.appendChild(smallZone);
+  }
+}
 
-    // Greeting overlay (hidden by default)
-    var greeting = document.createElement('div');
-    greeting.className = 'greeting-overlay';
-    greeting.id = 'greeting-' + cam.id;
-    tile.appendChild(greeting);
+function createSlotTile(slot, slotType, index) {
+  var camId = slot.camera_id;
+  var cam = camId ? cameras.find(function(c) { return c.id === camId; }) : null;
 
-    grid.appendChild(tile);
+  if (!cam) {
+    // Empty slot
+    var tile = document.createElement('div');
+    tile.className = 'tile empty-slot';
+    tile.dataset.slotType = slotType;
+    tile.dataset.slotIndex = index;
+
+    var plus = document.createElement('div');
+    plus.className = 'plus-icon';
+    plus.textContent = '+';
+    tile.appendChild(plus);
+
+    var lbl = document.createElement('div');
+    lbl.className = 'slot-label';
+    lbl.textContent = slot.name || (slotType === 'big' ? 'Main ' + (index+1) : 'Slot ' + (index+1));
+    tile.appendChild(lbl);
+
+    tile.addEventListener('click', function(e) {
+      showAssignDropdown(e, slotType, index);
+    });
+
+    // Drag target for spotlight swap
+    tile.addEventListener('dragover', function(e) { e.preventDefault(); tile.classList.add('drag-over'); });
+    tile.addEventListener('dragleave', function() { tile.classList.remove('drag-over'); });
+    tile.addEventListener('drop', function(e) {
+      e.preventDefault();
+      tile.classList.remove('drag-over');
+      handleDrop(slotType, index);
+    });
+
+    return tile;
+  }
+
+  // Assigned slot with camera
+  var tile = document.createElement('div');
+  tile.className = 'tile';
+  tile.id = 'tile-' + cam.id;
+  tile.dataset.slotType = slotType;
+  tile.dataset.slotIndex = index;
+  tile.addEventListener('click', function() { toggleFullscreen(cam.id); });
+
+  // Draggable for spotlight layouts
+  if (LAYOUT_DEFS[activeLayout].type === 'spotlight') {
+    tile.draggable = true;
+    tile.addEventListener('dragstart', function(e) {
+      _dragData = {slotType: slotType, slotIndex: index, camId: cam.id};
+      tile.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    tile.addEventListener('dragend', function() { tile.classList.remove('dragging'); });
+    tile.addEventListener('dragover', function(e) { e.preventDefault(); tile.classList.add('drag-over'); });
+    tile.addEventListener('dragleave', function() { tile.classList.remove('drag-over'); });
+    tile.addEventListener('drop', function(e) {
+      e.preventDefault();
+      tile.classList.remove('drag-over');
+      handleDrop(slotType, index);
+    });
+  }
+
+  // Label
+  var label = document.createElement('div');
+  label.className = 'label';
+  label.textContent = slot.name || cam.name;
+  tile.appendChild(label);
+
+  // Remove/unassign button
+  var removeBtn = document.createElement('button');
+  removeBtn.className = 'remove-btn';
+  removeBtn.textContent = '\u00D7';
+  removeBtn.title = 'Unassign';
+  removeBtn.addEventListener('click', function(e) {
+    e.stopPropagation();
+    unassignSlot(slotType, index);
   });
+  tile.appendChild(removeBtn);
+
+  // Quality toggle
+  if (cam.can_switch_quality) {
+    var isHD = cam.quality === 'high';
+    var qBtn = document.createElement('button');
+    qBtn.className = 'quality-btn' + (isHD ? ' hd' : '');
+    qBtn.textContent = isHD ? 'HD' : 'SD';
+    qBtn.title = isHD ? '2560x1440 \u2014 Click for SD' : '768x432 \u2014 Click for HD';
+    qBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      switchQuality(cam.id, cam.quality);
+    });
+    tile.appendChild(qBtn);
+  }
+
+  // Motion badge
+  var motionBadge = document.createElement('div');
+  motionBadge.className = 'motion-badge';
+  motionBadge.id = 'motion-' + cam.id;
+  motionBadge.textContent = 'MOTION';
+  tile.appendChild(motionBadge);
+
+  // Image
+  var img = document.createElement('img');
+  img.src = cam.stream_url;
+  img.alt = cam.name;
+  img.addEventListener('error', function() {
+    this.style.display = 'none';
+    showOffline(cam.id);
+  });
+  tile.appendChild(img);
+
+  // Tracking canvas
+  var canvas = document.createElement('canvas');
+  canvas.className = 'tracking-canvas';
+  canvas.id = 'track-' + cam.id;
+  tile.appendChild(canvas);
+
+  // Greeting overlay
+  var greeting = document.createElement('div');
+  greeting.className = 'greeting-overlay';
+  greeting.id = 'greeting-' + cam.id;
+  tile.appendChild(greeting);
+
+  return tile;
+}
+
+// --- Slot Assignment ---
+function showAssignDropdown(e, slotType, index) {
+  closeAssignDropdown();
+  e.stopPropagation();
+
+  var dd = document.createElement('div');
+  dd.className = 'slot-assign-dropdown';
+  dd.style.left = e.clientX + 'px';
+  dd.style.top = e.clientY + 'px';
+
+  // Get cameras already used in this layout
+  var usedCamIds = {};
+  if (layoutConfig && layoutConfig.layouts[activeLayout]) {
+    var lay = layoutConfig.layouts[activeLayout];
+    ['slots','big','small'].forEach(function(st) {
+      (lay[st] || []).forEach(function(s) {
+        if (s.camera_id) usedCamIds[s.camera_id] = true;
+      });
+    });
+  }
+
+  if (cameras.length === 0) {
+    var noItem = document.createElement('div');
+    noItem.className = 'dd-item disabled';
+    noItem.textContent = 'No cameras available';
+    dd.appendChild(noItem);
+  } else {
+    cameras.forEach(function(cam) {
+      var item = document.createElement('div');
+      item.className = 'dd-item';
+      if (usedCamIds[cam.id]) {
+        item.classList.add('disabled');
+        item.textContent = cam.name + ' (in use)';
+      } else {
+        item.textContent = cam.name;
+        item.addEventListener('click', function() {
+          assignCamera(slotType, index, cam.id);
+          closeAssignDropdown();
+        });
+      }
+      dd.appendChild(item);
+    });
+  }
+
+  document.body.appendChild(dd);
+  _assignDropdown = dd;
+
+  // Close on outside click
+  setTimeout(function() {
+    document.addEventListener('click', closeAssignDropdown, {once: true});
+  }, 0);
+}
+
+function closeAssignDropdown() {
+  if (_assignDropdown) {
+    _assignDropdown.remove();
+    _assignDropdown = null;
+  }
+}
+
+async function assignCamera(slotType, index, camId) {
+  try {
+    await fetch(API + '/api/layout/slot', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        layout_id: activeLayout,
+        slot_type: slotType,
+        index: index,
+        camera_id: camId
+      })
+    });
+    await loadLayout();
+  } catch (e) {
+    console.error('Failed to assign camera:', e);
+  }
+}
+
+async function unassignSlot(slotType, index) {
+  try {
+    await fetch(API + '/api/layout/slot', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        layout_id: activeLayout,
+        slot_type: slotType,
+        index: index,
+        camera_id: ''
+      })
+    });
+    await loadLayout();
+  } catch (e) {
+    console.error('Failed to unassign slot:', e);
+  }
+}
+
+// --- Drag & Drop Swap ---
+async function handleDrop(toSlotType, toIndex) {
+  if (!_dragData) return;
+  var from = _dragData;
+  _dragData = null;
+  if (from.slotType === toSlotType && from.slotIndex === toIndex) return;
+  try {
+    await fetch(API + '/api/layout/swap', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        layout_id: activeLayout,
+        from_type: from.slotType,
+        from_index: from.slotIndex,
+        to_type: toSlotType,
+        to_index: toIndex
+      })
+    });
+    await loadLayout();
+  } catch (e) {
+    console.error('Failed to swap slots:', e);
+  }
+}
+
+// --- Motion Mode ---
+async function toggleMotionMode() {
+  var newMode = motionMode === 'auto' ? 'manual' : 'auto';
+  try {
+    await fetch(API + '/api/layout/motion-mode', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({mode: newMode})
+    });
+    motionMode = newMode;
+    updateMotionBtn();
+  } catch (e) {
+    console.error('Failed to toggle motion mode:', e);
+  }
+}
+
+function updateMotionBtn() {
+  var btn = document.getElementById('btnMotionMode');
+  if (!btn) return;
+  if (motionMode === 'auto') {
+    btn.textContent = 'Auto';
+    btn.classList.add('active');
+    btn.title = 'Motion mode: auto (click for manual)';
+  } else {
+    btn.textContent = 'Manual';
+    btn.classList.remove('active');
+    btn.title = 'Motion mode: manual (click for auto)';
+  }
+}
+
+// --- Detection Settings Panel ---
+function toggleDetectPanel() {
+  var panel = document.getElementById('detectPanel');
+  if (panel) panel.classList.toggle('open');
+}
+
+function renderDetectPanel() {
+  var container = document.getElementById('detectRows');
+  if (!container || !layoutConfig) return;
+  while (container.firstChild) container.removeChild(container.firstChild);
+
+  var det = layoutConfig.detection || {};
+  var features = ['motion', 'human', 'face', 'pet'];
+  features.forEach(function(feat) {
+    var cfg = det[feat] || {enabled: false, sensitivity: 50};
+    var row = document.createElement('div');
+    row.className = 'detect-row';
+
+    var nameEl = document.createElement('span');
+    nameEl.className = 'detect-name';
+    nameEl.textContent = feat;
+    row.appendChild(nameEl);
+
+    var toggle = document.createElement('button');
+    toggle.className = 'detect-toggle' + (cfg.enabled ? ' on' : '');
+    toggle.addEventListener('click', function() {
+      var newEnabled = !toggle.classList.contains('on');
+      toggle.classList.toggle('on', newEnabled);
+      updateDetection(feat, newEnabled, null);
+    });
+    row.appendChild(toggle);
+
+    var slider = document.createElement('input');
+    slider.type = 'range';
+    slider.className = 'detect-sensitivity';
+    slider.min = '0';
+    slider.max = '100';
+    slider.value = cfg.sensitivity;
+    var valEl = document.createElement('span');
+    valEl.className = 'detect-sens-val';
+    valEl.textContent = cfg.sensitivity;
+    slider.addEventListener('input', function() {
+      valEl.textContent = slider.value;
+    });
+    slider.addEventListener('change', function() {
+      updateDetection(feat, null, parseInt(slider.value));
+    });
+    row.appendChild(slider);
+    row.appendChild(valEl);
+
+    container.appendChild(row);
+  });
+}
+
+async function updateDetection(feature, enabled, sensitivity) {
+  var body = {feature: feature};
+  if (enabled !== null) body.enabled = enabled;
+  if (sensitivity !== null) body.sensitivity = sensitivity;
+  try {
+    await fetch(API + '/api/detection', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+  } catch (e) {
+    console.error('Failed to update detection:', e);
+  }
+}
+
+// --- WebSocket Motion ---
+function connectMotionWs() {
+  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  var wsUrl = proto + '//' + location.host + '/ws/motion';
+  try {
+    _motionWs = new WebSocket(wsUrl);
+    _motionWs.onmessage = function(ev) {
+      try {
+        var data = JSON.parse(ev.data);
+        if (data.type === 'motion') handleMotionEvent(data);
+      } catch (e) {}
+    };
+    _motionWs.onclose = function() {
+      setTimeout(connectMotionWs, 3000);
+    };
+    _motionWs.onerror = function() {
+      _motionWs.close();
+    };
+  } catch (e) {
+    setTimeout(connectMotionWs, 5000);
+  }
+}
+
+function handleMotionEvent(data) {
+  var camId = data.camera_id;
+  // Flash motion badge
+  var badge = document.getElementById('motion-' + camId);
+  if (badge) {
+    badge.classList.add('active');
+    clearTimeout(_motionTimers[camId]);
+    _motionTimers[camId] = setTimeout(function() {
+      badge.classList.remove('active');
+    }, 2000);
+  }
+  // Auto-swap in spotlight mode
+  if (motionMode === 'auto' && LAYOUT_DEFS[activeLayout] && LAYOUT_DEFS[activeLayout].type === 'spotlight') {
+    autoSwapMotion(camId);
+  }
+}
+
+async function autoSwapMotion(camId) {
+  if (!layoutConfig) return;
+  var lay = layoutConfig.layouts[activeLayout];
+  if (!lay) return;
+  // Check if camera is already in a big slot
+  var inBig = (lay.big || []).some(function(s) { return s.camera_id === camId; });
+  if (inBig) return;
+  // Find camera in small zone
+  var fromIdx = -1;
+  (lay.small || []).forEach(function(s, i) {
+    if (s.camera_id === camId) fromIdx = i;
+  });
+  if (fromIdx < 0) return;
+  // Swap with first big slot
+  try {
+    await fetch(API + '/api/layout/swap', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        layout_id: activeLayout,
+        from_type: 'small',
+        from_index: fromIdx,
+        to_type: 'big',
+        to_index: 0
+      })
+    });
+    await loadLayout();
+  } catch (e) {
+    console.error('Auto-swap failed:', e);
+  }
 }
 
 function showOffline(camId) {
@@ -1515,12 +2109,12 @@ async function openCustomerDetail(face) {
   detail.classList.add('open');
 
   // Build detail HTML
-  detail.innerHTML = '';
+  while (detail.firstChild) detail.removeChild(detail.firstChild);
 
   // Back button
   var backBtn = document.createElement('button');
   backBtn.className = 'cd-back';
-  backBtn.innerHTML = '&#8592; Back';
+  backBtn.textContent = '\u2190 Back';
   backBtn.addEventListener('click', closeCustomerDetail);
   detail.appendChild(backBtn);
 
@@ -1560,11 +2154,15 @@ async function openCustomerDetail(face) {
   statItems.forEach(function(s) {
     var el = document.createElement('div');
     el.className = 'cd-stat';
-    var html = s.label + ': <b>' + s.value + '</b>';
     if (s.hex) {
-      html = '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + s.hex + ';vertical-align:middle;margin-right:3px;border:1px solid #555"></span>' + html;
+      var dot = document.createElement('span');
+      dot.style.cssText = 'display:inline-block;width:10px;height:10px;border-radius:50%;background:' + s.hex + ';vertical-align:middle;margin-right:3px;border:1px solid #555';
+      el.appendChild(dot);
     }
-    el.innerHTML = html;
+    el.appendChild(document.createTextNode(s.label + ': '));
+    var bold = document.createElement('b');
+    bold.textContent = s.value;
+    el.appendChild(bold);
     stats.appendChild(el);
   });
   infoDiv.appendChild(stats);
@@ -1643,7 +2241,10 @@ async function openCustomerDetail(face) {
 
         var tdShirt = document.createElement('td');
         if (o.shirt_color) {
-          tdShirt.innerHTML = '<span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:' + (o.shirt_hex || '#666') + ';vertical-align:middle;margin-right:5px;border:1px solid #555"></span>' + o.shirt_color;
+          var sDot = document.createElement('span');
+          sDot.style.cssText = 'display:inline-block;width:12px;height:12px;border-radius:50%;background:' + (o.shirt_hex || '#666') + ';vertical-align:middle;margin-right:5px;border:1px solid #555';
+          tdShirt.appendChild(sDot);
+          tdShirt.appendChild(document.createTextNode(o.shirt_color));
         } else {
           tdShirt.textContent = '-';
         }
@@ -1651,7 +2252,10 @@ async function openCustomerDetail(face) {
 
         var tdPants = document.createElement('td');
         if (o.pants_color) {
-          tdPants.innerHTML = '<span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:' + (o.pants_hex || '#666') + ';vertical-align:middle;margin-right:5px;border:1px solid #555"></span>' + o.pants_color;
+          var pDot = document.createElement('span');
+          pDot.style.cssText = 'display:inline-block;width:12px;height:12px;border-radius:50%;background:' + (o.pants_hex || '#666') + ';vertical-align:middle;margin-right:5px;border:1px solid #555';
+          tdPants.appendChild(pDot);
+          tdPants.appendChild(document.createTextNode(o.pants_color));
         } else {
           tdPants.textContent = '-';
         }
@@ -1745,7 +2349,7 @@ function closeCustomerDetail() {
   if (tabs) tabs.style.display = '';
   if (detail) {
     detail.classList.remove('open');
-    detail.innerHTML = '';
+    while (detail.firstChild) detail.removeChild(detail.firstChild);
   }
   loadFacesTab('known');
 }
@@ -1835,9 +2439,9 @@ document.addEventListener('keydown', function(e) {
 // --- Auto-retry offline cameras ---
 setInterval(function() {
   cameras.forEach(function(cam) {
-    const tile = document.getElementById('tile-' + cam.id);
+    var tile = document.getElementById('tile-' + cam.id);
     if (!tile) return;
-    const img = tile.querySelector('img');
+    var img = tile.querySelector('img');
     if (img && img.style.display === 'none') {
       img.src = cam.stream_url + (cam.stream_url.includes('?') ? '&' : '?') + 't=' + Date.now();
       img.style.display = '';
@@ -1978,7 +2582,6 @@ function focusNextUnknownInput() {
 }
 
 setInterval(pollUnknownBar, 2000);
-pollUnknownBar();
 
 // --- Greeting overlay polling ---
 async function pollDetections() {
@@ -1999,23 +2602,42 @@ async function pollDetections() {
       }
     });
 
-    // Update greeting overlays on all camera tiles
-    cameras.forEach(function(cam) {
-      var el = document.getElementById('greeting-' + cam.id);
+    // Update greeting overlays on all visible camera tiles
+    var allCamIds = cameras.map(function(c) { return c.id; });
+    allCamIds.forEach(function(cid) {
+      var el = document.getElementById('greeting-' + cid);
       if (!el) return;
-      var people = byCam[cam.id];
+      var people = byCam[cid];
       if (people && Object.keys(people).length > 0) {
         var names = Object.keys(people);
-        var parts = names.map(function(name) {
+        while (el.firstChild) el.removeChild(el.firstChild);
+        var iconSpan = document.createElement('span');
+        iconSpan.className = 'greeting-icon';
+        iconSpan.textContent = '\u263a';
+        el.appendChild(iconSpan);
+        names.forEach(function(name, ni) {
+          if (ni > 0) el.appendChild(document.createTextNode(' \u00a0 '));
           var info = people[name];
-          var outfitDot = info.outfit_hex ? '<span class="outfit-dot" style="background:' + info.outfit_hex + '" title="' + info.outfit_color + ' outfit"></span>' : '';
           if (name === 'New Customer') {
-            return '<span class="greeting-new">Welcome, New Customer!</span>' + outfitDot;
+            var newSpan = document.createElement('span');
+            newSpan.className = 'greeting-new';
+            newSpan.textContent = 'Welcome, New Customer!';
+            el.appendChild(newSpan);
+          } else {
+            el.appendChild(document.createTextNode('Hello, ' + name + '!'));
+            var confSpan = document.createElement('span');
+            confSpan.className = 'greeting-conf';
+            confSpan.textContent = (info.confidence * 100).toFixed(0) + '%';
+            el.appendChild(confSpan);
           }
-          var conf = (info.confidence * 100).toFixed(0);
-          return 'Hello, ' + name + '!<span class="greeting-conf">' + conf + '%</span>' + outfitDot;
+          if (info.outfit_hex) {
+            var oDot = document.createElement('span');
+            oDot.className = 'outfit-dot';
+            oDot.style.background = info.outfit_hex;
+            oDot.title = info.outfit_color + ' outfit';
+            el.appendChild(oDot);
+          }
         });
-        el.innerHTML = '<span class="greeting-icon">&#9786;</span>' + parts.join(' &nbsp; ');
         el.classList.add('visible');
       } else {
         el.classList.remove('visible');
@@ -2071,8 +2693,9 @@ function renderTracking() {
   requestAnimationFrame(renderTracking);
   var now = Date.now();
 
-  cameras.forEach(function(cam) {
-    var canvas = document.getElementById('track-' + cam.id);
+  var visibleCamIds = cameras.map(function(c) { return c.id; });
+  visibleCamIds.forEach(function(camId) {
+    var canvas = document.getElementById('track-' + camId);
     if (!canvas) return;
     var tile = canvas.parentElement;
     var img = tile.querySelector('img');
@@ -2086,7 +2709,7 @@ function renderTracking() {
     var ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, w, h);
 
-    var camPersons = _trackTargets[cam.id] || [];
+    var camPersons = _trackTargets[camId] || [];
     if (camPersons.length === 0) return;
 
     // object-fit: contain math
@@ -2107,7 +2730,7 @@ function renderTracking() {
       var targetCx = targetX + targetW / 2;
 
       // Unique key for smoothing
-      var key = cam.id + '_' + (p.face_id || ('b' + idx));
+      var key = camId + '_' + (p.face_id || ('b' + idx));
       var sm = _trackSmooth[key];
       if (!sm) {
         sm = { bx: targetX, by: targetY, bw: targetW, bh: targetH, cx: targetCx, op: 0 };
@@ -2211,7 +2834,7 @@ function renderTracking() {
     // Expire old smooth entries not in current targets
     var validKeys = {};
     camPersons.forEach(function(p, idx) {
-      validKeys[cam.id + '_' + (p.face_id || ('b' + idx))] = true;
+      validKeys[camId + '_' + (p.face_id || ('b' + idx))] = true;
     });
   });
 
@@ -2219,10 +2842,10 @@ function renderTracking() {
   if (now - (renderTracking._lastClean || 0) > 5000) {
     renderTracking._lastClean = now;
     var allValid = {};
-    cameras.forEach(function(cam) {
-      var pp = _trackTargets[cam.id] || [];
+    visibleCamIds.forEach(function(cid) {
+      var pp = _trackTargets[cid] || [];
       pp.forEach(function(p, idx) {
-        allValid[cam.id + '_' + (p.face_id || ('b' + idx))] = true;
+        allValid[cid + '_' + (p.face_id || ('b' + idx))] = true;
       });
     });
     Object.keys(_trackSmooth).forEach(function(k) {
@@ -2240,21 +2863,21 @@ var _shPollTimer = null;
 function toggleSmartHome() {
   if (_shView) {
     _shView = false;
-    document.getElementById('grid').style.display = '';
+    document.getElementById('layoutContainer').style.display = '';
     document.getElementById('smarthomePanel').classList.remove('active');
     document.getElementById('btnSmartHome').classList.remove('active');
-    ['g1','g2','g3','g4'].forEach(function(id) {
-      document.getElementById(id).style.display = '';
-    });
+    document.querySelectorAll('.layout-btn').forEach(function(b) { b.style.display = ''; });
+    document.getElementById('btnMotionMode').style.display = '';
+    document.getElementById('btnDetect').style.display = '';
     if (_shPollTimer) { clearInterval(_shPollTimer); _shPollTimer = null; }
   } else {
     _shView = true;
-    document.getElementById('grid').style.display = 'none';
+    document.getElementById('layoutContainer').style.display = 'none';
     document.getElementById('smarthomePanel').classList.add('active');
     document.getElementById('btnSmartHome').classList.add('active');
-    ['g1','g2','g3','g4'].forEach(function(id) {
-      document.getElementById(id).style.display = 'none';
-    });
+    document.querySelectorAll('.layout-btn').forEach(function(b) { b.style.display = 'none'; });
+    document.getElementById('btnMotionMode').style.display = 'none';
+    document.getElementById('btnDetect').style.display = 'none';
     shLoadDevices();
     if (_shPollTimer) clearInterval(_shPollTimer);
     _shPollTimer = setInterval(shLoadDevices, 2000);
@@ -2302,7 +2925,7 @@ async function shLoadDevices() {
 
     if (devices.length === 0 && !data.scanning) {
       empty.style.display = '';
-      container.innerHTML = '';
+      while (container.firstChild) container.removeChild(container.firstChild);
       return;
     }
     empty.style.display = 'none';
@@ -2319,63 +2942,105 @@ async function shLoadDevices() {
     var icons = {switch:'⚡', plug:'🔌', light:'💡', sensor:'🌡️', hub:'🏠', broker:'📡', unknown:'❓'};
     var labels = {switch:'Switches', plug:'Plugs', light:'Lights', sensor:'Sensors', hub:'Hubs', broker:'MQTT Brokers', unknown:'Other Devices'};
 
-    var html = '';
+    while (container.firstChild) container.removeChild(container.firstChild);
     order.forEach(function(type) {
       var list = groups[type];
       if (!list || !list.length) return;
-      html += '<div class="sh-section-title">' + (labels[type] || type) + ' (' + list.length + ')</div>';
-      html += '<div class="sh-grid">';
+      var secTitle = document.createElement('div');
+      secTitle.className = 'sh-section-title';
+      secTitle.textContent = (labels[type] || type) + ' (' + list.length + ')';
+      container.appendChild(secTitle);
+      var gridEl = document.createElement('div');
+      gridEl.className = 'sh-grid';
       list.forEach(function(d) {
-        var icon = icons[d.type] || '❓';
+        var iconChar = icons[d.type] || '\u2753';
         var canToggle = (d.type === 'switch' || d.type === 'plug' || d.type === 'light') &&
                         (d.brand === 'tasmota' || d.brand === 'shelly' || d.brand === 'kasa' || d.brand === 'sonoff');
         var powerOn = d.status && d.status.power;
-
-        html += '<div class="sh-card">';
-        html += '<div class="sh-card-top">';
-        html += '<div class="sh-icon ' + d.type + '">' + icon + '</div>';
-        html += '<div class="sh-card-info">';
-        html += '<div class="sh-card-name">' + escHtml(d.name) + '</div>';
-        html += '<div class="sh-card-sub">' + d.ip + ':' + d.port + '</div>';
-        html += '</div>';
+        var card = document.createElement('div');
+        card.className = 'sh-card';
+        var topEl = document.createElement('div');
+        topEl.className = 'sh-card-top';
+        var iconEl = document.createElement('div');
+        iconEl.className = 'sh-icon ' + d.type;
+        iconEl.textContent = iconChar;
+        topEl.appendChild(iconEl);
+        var infoEl = document.createElement('div');
+        infoEl.className = 'sh-card-info';
+        var nameEl = document.createElement('div');
+        nameEl.className = 'sh-card-name';
+        nameEl.textContent = d.name || '';
+        infoEl.appendChild(nameEl);
+        var subEl = document.createElement('div');
+        subEl.className = 'sh-card-sub';
+        subEl.textContent = d.ip + ':' + d.port;
+        infoEl.appendChild(subEl);
+        topEl.appendChild(infoEl);
         if (canToggle) {
-          html += '<button class="sh-toggle' + (powerOn ? ' on' : '') + '" onclick="shToggle(\'' + d.id + '\', this)" title="Toggle power"></button>';
+          var toggleBtn = document.createElement('button');
+          toggleBtn.className = 'sh-toggle' + (powerOn ? ' on' : '');
+          toggleBtn.title = 'Toggle power';
+          (function(devId, btn) {
+            btn.addEventListener('click', function() { shToggle(devId, btn); });
+          })(d.id, toggleBtn);
+          topEl.appendChild(toggleBtn);
         }
-        html += '</div>';
-        html += '<div class="sh-card-body">';
-        html += '<span class="sh-brand-tag">' + d.brand + '</span>';
+        card.appendChild(topEl);
+        var bodyEl = document.createElement('div');
+        bodyEl.className = 'sh-card-body';
+        var brandTag = document.createElement('span');
+        brandTag.className = 'sh-brand-tag';
+        brandTag.textContent = d.brand;
+        bodyEl.appendChild(brandTag);
         if (d.model && d.model !== d.brand) {
-          html += '<span class="sh-stat">' + escHtml(d.model) + '</span>';
+          var modelStat = document.createElement('span');
+          modelStat.className = 'sh-stat';
+          modelStat.textContent = d.model;
+          bodyEl.appendChild(modelStat);
         }
         if (d.firmware) {
-          html += '<span class="sh-stat">FW: ' + escHtml(d.firmware) + '</span>';
+          var fwStat = document.createElement('span');
+          fwStat.className = 'sh-stat';
+          fwStat.textContent = 'FW: ' + d.firmware;
+          bodyEl.appendChild(fwStat);
         }
         if (d.mac) {
-          html += '<span class="sh-stat">' + d.mac + '</span>';
+          var macStat = document.createElement('span');
+          macStat.className = 'sh-stat';
+          macStat.textContent = d.mac;
+          bodyEl.appendChild(macStat);
         }
         if (d.status) {
           if (d.status.temperature !== undefined) {
-            html += '<span class="sh-stat"><b>' + d.status.temperature + '°C</b></span>';
+            var tempStat = document.createElement('span');
+            tempStat.className = 'sh-stat';
+            var tempB = document.createElement('b');
+            tempB.textContent = d.status.temperature + '\u00b0C';
+            tempStat.appendChild(tempB);
+            bodyEl.appendChild(tempStat);
           }
           if (d.status.humidity !== undefined) {
-            html += '<span class="sh-stat"><b>' + d.status.humidity + '%</b> RH</span>';
+            var humStat = document.createElement('span');
+            humStat.className = 'sh-stat';
+            var humB = document.createElement('b');
+            humB.textContent = d.status.humidity + '%';
+            humStat.appendChild(humB);
+            humStat.appendChild(document.createTextNode(' RH'));
+            bodyEl.appendChild(humStat);
           }
         }
-        html += '</div>';
-        html += '</div>';
+        card.appendChild(bodyEl);
+        gridEl.appendChild(card);
       });
-      html += '</div>';
+      container.appendChild(gridEl);
     });
-    container.innerHTML = html;
   } catch(e) {
     console.error('shLoadDevices error:', e);
   }
 }
 
 function escHtml(s) {
-  var d = document.createElement('div');
-  d.textContent = s || '';
-  return d.innerHTML;
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 async function shToggle(deviceId, btn) {
@@ -2391,8 +3056,25 @@ async function shToggle(deviceId, btn) {
   }
 }
 
+// --- Keyboard: close detect panel on Escape ---
+var origKeyHandler = document.onkeydown;
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    var dp = document.getElementById('detectPanel');
+    if (dp && dp.classList.contains('open')) {
+      dp.classList.remove('open');
+    }
+    closeAssignDropdown();
+  }
+});
+
 // --- Init ---
-loadCameras();
+(async function() {
+  await loadCameras();
+  await loadLayout();
+  pollUnknownBar();
+  connectMotionWs();
+})();
 </script>
 </body>
 </html>

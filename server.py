@@ -3,20 +3,23 @@
 Start with:  python server.py
 Open:         http://localhost:8080
 """
+import json
 import asyncio
 import uvicorn
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from typing import Optional
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse, Response
 from pydantic import BaseModel
 from pathlib import Path
-from camera_manager import CameraManager, StreamManager
+from camera_manager import CameraManager, StreamManager, auto_resolve_cameras
 from discovery import discover_onvif_cameras, get_rtsp_url_from_onvif
 from face_manager import FaceManager, FaceDetector
 from smart_home import SmartHomeScanner
+from layout_manager import LayoutManager
+from motion_detector import MotionDetector
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,13 +29,61 @@ logger = logging.getLogger(__name__)
 
 camera_mgr = CameraManager()
 stream_mgr = StreamManager()
+stream_mgr.set_camera_manager(camera_mgr)
 face_mgr = FaceManager()
 face_detector = FaceDetector(stream_mgr, face_mgr)
 smart_home = SmartHomeScanner()
+layout_mgr = LayoutManager()
+
+# Link layout manager to face detector for detection toggle/sensitivity
+face_detector.set_layout_manager(layout_mgr)
+
+# Motion detector — wired into stream manager
+motion_detector = MotionDetector(
+    sensitivity=layout_mgr.get_sensitivity("motion"),
+)
+stream_mgr.motion_detector = motion_detector
+
+# WebSocket clients for motion events
+_motion_clients: list[WebSocket] = []
+_motion_lock = asyncio.Lock()
+
+
+async def _broadcast_motion(event: dict):
+    msg = json.dumps(event)
+    async with _motion_lock:
+        dead = []
+        for ws in _motion_clients:
+            try:
+                await ws.send_text(msg)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            _motion_clients.remove(ws)
+
+
+def _on_motion(cam_id: str, intensity: float):
+    """Push motion event to all WebSocket clients (called from sync thread)."""
+    import time
+    event = {"type": "motion", "camera_id": cam_id,
+             "intensity": round(intensity, 4), "ts": time.time()}
+    try:
+        loop = asyncio.get_event_loop()
+        loop.call_soon_threadsafe(asyncio.ensure_future, _broadcast_motion(event))
+    except RuntimeError:
+        pass  # no event loop yet
+
+
+motion_detector.on_motion(_on_motion)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Auto-resolve camera IPs if they changed (e.g. after power outage / DHCP)
+    resolved = await asyncio.to_thread(auto_resolve_cameras, camera_mgr)
+    if resolved:
+        logger.info(f"Auto-resolved {resolved} camera IP(s)")
+
     for cam in camera_mgr.list_all():
         if cam.enabled:
             stream_mgr.start_stream(cam)
@@ -43,6 +94,11 @@ async def lifespan(app: FastAPI):
     if active_ids:
         face_detector.start(active_ids)
         logger.info(f"Face detection started on {len(active_ids)} camera(s)")
+
+    # Enable motion detection based on saved setting
+    if layout_mgr.is_detection_enabled("motion"):
+        motion_detector.set_enabled(True)
+        logger.info("Motion detection enabled at startup")
 
     yield
 
@@ -328,6 +384,12 @@ async def tracked_persons(cam_id: Optional[str] = Query(None)):
     return face_detector.get_tracked_persons(cam_id=cam_id)
 
 
+@app.get("/api/pets")
+async def active_pets(cam_id: Optional[str] = Query(None)):
+    """Currently detected pets with bounding boxes."""
+    return face_detector.get_active_pets(cam_id=cam_id)
+
+
 @app.get("/api/sightings/{sighting_id}/image")
 async def sighting_image(sighting_id: str):
     for s in face_mgr.sightings:
@@ -380,6 +442,109 @@ async def smarthome_status(device_id: str):
     if result is None:
         raise HTTPException(404, "Device not found")
     return result
+
+
+# --- Layout API ---
+
+@app.get("/api/layout")
+async def get_layout():
+    """Return full layout + detection config."""
+    return layout_mgr.get_config()
+
+
+class SetActiveLayoutRequest(BaseModel):
+    layout_id: str
+
+@app.post("/api/layout/active")
+async def set_active_layout(req: SetActiveLayoutRequest):
+    if not layout_mgr.set_active_layout(req.layout_id):
+        raise HTTPException(400, "Invalid layout ID")
+    return {"ok": True, "active_layout": req.layout_id}
+
+
+class UpdateSlotRequest(BaseModel):
+    layout_id: str
+    slot_type: str  # "slots", "big", or "small"
+    index: int
+    camera_id: Optional[str] = None
+    name: Optional[str] = None
+
+@app.post("/api/layout/slot")
+async def update_slot(req: UpdateSlotRequest):
+    if not layout_mgr.update_slot(req.layout_id, req.slot_type, req.index,
+                                   camera_id=req.camera_id, name=req.name):
+        raise HTTPException(400, "Invalid slot or duplicate camera")
+    return {"ok": True}
+
+
+class SwapSlotsRequest(BaseModel):
+    layout_id: str
+    from_type: str
+    from_index: int
+    to_type: str
+    to_index: int
+
+@app.post("/api/layout/swap")
+async def swap_slots(req: SwapSlotsRequest):
+    if not layout_mgr.swap_slots(req.layout_id,
+                                  req.from_type, req.from_index,
+                                  req.to_type, req.to_index):
+        raise HTTPException(400, "Invalid swap")
+    return {"ok": True}
+
+
+class MotionModeRequest(BaseModel):
+    mode: str  # "auto" or "manual"
+
+@app.post("/api/layout/motion-mode")
+async def set_motion_mode(req: MotionModeRequest):
+    if not layout_mgr.set_motion_mode(req.mode):
+        raise HTTPException(400, "Invalid mode, use 'auto' or 'manual'")
+    return {"ok": True, "motion_mode": req.mode}
+
+
+# --- Detection Settings API ---
+
+class DetectionSettingRequest(BaseModel):
+    feature: str        # "motion", "human", "face", "pet"
+    enabled: Optional[bool] = None
+    sensitivity: Optional[int] = None
+
+@app.post("/api/detection")
+async def update_detection(req: DetectionSettingRequest):
+    """Toggle a detection feature on/off and/or set sensitivity (0-100)."""
+    if not layout_mgr.update_detection(req.feature, enabled=req.enabled,
+                                        sensitivity=req.sensitivity):
+        raise HTTPException(400, f"Unknown feature: {req.feature}")
+
+    # Apply motion detection state change immediately
+    if req.feature == "motion":
+        motion_detector.set_enabled(layout_mgr.is_detection_enabled("motion"))
+        motion_detector.sensitivity = layout_mgr.get_sensitivity("motion")
+
+    return {"ok": True, "detection": layout_mgr.detection}
+
+
+@app.get("/api/detection")
+async def get_detection():
+    """Return current detection settings."""
+    return layout_mgr.detection
+
+
+# --- WebSocket: Motion Events ---
+
+@app.websocket("/ws/motion")
+async def motion_ws(websocket: WebSocket):
+    await websocket.accept()
+    _motion_clients.append(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if websocket in _motion_clients:
+            _motion_clients.remove(websocket)
 
 
 # --- Static Files (Web UI) ---
