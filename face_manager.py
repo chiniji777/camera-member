@@ -334,12 +334,18 @@ def _download_model(url: str, dest: Path):
     """Download a file with progress logging."""
     if dest.exists():
         return
+    dest.parent.mkdir(parents=True, exist_ok=True)
     logger.info(f"Downloading model: {dest.name} ...")
     try:
-        urllib.request.urlretrieve(url, str(dest))
+        # Use urlopen + manual write to avoid urlretrieve temp-file issues on Google Drive
+        with urllib.request.urlopen(url) as resp:
+            data = resp.read()
+        dest.write_bytes(data)
         logger.info(f"Downloaded {dest.name} ({dest.stat().st_size // 1024} KB)")
     except Exception as e:
         logger.error(f"Failed to download {url}: {e}")
+        if dest.exists():
+            dest.unlink()
         raise
 
 
