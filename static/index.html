@@ -1136,7 +1136,7 @@
 </div>
 
 <script>
-const API = '';
+const API = location.pathname.startsWith('/camera') ? '/camera' : '';
 let cameras = [];
 let discoveredCameras = [];
 
