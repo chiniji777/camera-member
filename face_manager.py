@@ -313,6 +313,27 @@ class FaceManager:
 
     # -- queries --
 
+    def auto_ignore_stale(self, max_age_seconds: float) -> int:
+        """Mark unknown faces older than max_age_seconds as ignored. Returns count changed."""
+        now_dt = _local_now()
+        changed = 0
+        with self._lock:
+            for face in list(self.faces.values()):
+                if face.status == "unknown":
+                    try:
+                        first = datetime.fromisoformat(face.first_seen)
+                        if first.tzinfo is None:
+                            first = first.astimezone()
+                        if (now_dt - first).total_seconds() >= max_age_seconds:
+                            face.status = "ignored"
+                            changed += 1
+                            logger.info(f"Auto-ignored face {face.id} (unlabeled for {max_age_seconds}s)")
+                    except Exception:
+                        pass
+            if changed:
+                self._save_faces()
+        return changed
+
     def get_faces(self, status: Optional[str] = None) -> list[Face]:
         faces = list(self.faces.values())
         if status:
@@ -511,92 +532,9 @@ class FaceDetector:
             self._outfit_date = today
             logger.info(f"Outfit tracking reset for new day: {today}")
 
-    def _extract_outfit_color(self, img: np.ndarray, bbox) -> Optional[dict]:
-        """Extract dominant outfit color from body region below face."""
-        x, y, fw, fh = bbox
-        h, w = img.shape[:2]
-
-        # Body region: below face, slightly wider, ~1.5x face height
-        body_top = min(h, y + fh)
-        body_bot = min(h, y + fh + int(fh * 1.5))
-        body_left = max(0, x - int(fw * 0.15))
-        body_right = min(w, x + fw + int(fw * 0.15))
-
-        if body_bot <= body_top or body_right <= body_left:
-            return None
-        if body_bot - body_top < 10 or body_right - body_left < 10:
-            return None
-
-        body = img[body_top:body_bot, body_left:body_right]
-        if body.size == 0:
-            return None
-
-        # Use center 60% to avoid background edges
-        bh, bw = body.shape[:2]
-        margin_x = int(bw * 0.2)
-        margin_y = int(bh * 0.2)
-        center = body[margin_y:bh - margin_y, margin_x:bw - margin_x]
-        if center.size == 0:
-            center = body
-
-        # Resize for speed and convert to HSV
-        small = cv2.resize(center, (20, 30))
-        hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
-
-        # Use median for robustness
-        med_h = float(np.median(hsv[:, :, 0]))
-        med_s = float(np.median(hsv[:, :, 1]))
-        med_v = float(np.median(hsv[:, :, 2]))
-
-        # Low saturation → achromatic
-        if med_s < 40:
-            if med_v < 70:
-                return {"color_hex": "#333333", "color_name": "Black"}
-            elif med_v < 170:
-                return {"color_hex": "#999999", "color_name": "Gray"}
-            else:
-                return {"color_hex": "#EEEEEE", "color_name": "White"}
-
-        # Map hue (0-180 in OpenCV) to color name
-        if med_h < 10 or med_h >= 170:
-            return {"color_hex": "#E53935", "color_name": "Red"}
-        elif med_h < 22:
-            return {"color_hex": "#FF9800", "color_name": "Orange"}
-        elif med_h < 35:
-            return {"color_hex": "#FDD835", "color_name": "Yellow"}
-        elif med_h < 78:
-            return {"color_hex": "#43A047", "color_name": "Green"}
-        elif med_h < 130:
-            return {"color_hex": "#1E88E5", "color_name": "Blue"}
-        elif med_h < 155:
-            return {"color_hex": "#8E24AA", "color_name": "Purple"}
-        else:
-            return {"color_hex": "#EC407A", "color_name": "Pink"}
-
-    def _extract_pants_color(self, img: np.ndarray, bbox) -> Optional[dict]:
-        """Extract pants color from lower body region below face."""
-        x, y, fw, fh = bbox
-        h, w = img.shape[:2]
-
-        # Pants region: ~2.5-4.5x face height below face top
-        pants_top = min(h, y + int(fh * 2.5))
-        pants_bot = min(h, y + int(fh * 4.5))
-        pants_left = max(0, x - int(fw * 0.2))
-        pants_right = min(w, x + fw + int(fw * 0.2))
-
-        if pants_bot - pants_top < 10 or pants_right - pants_left < 10:
-            return None
-
-        return self._extract_color_from_rect(img, pants_left, pants_top, pants_right, pants_bot)
-
-    def _extract_color_from_rect(self, img: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> Optional[dict]:
-        """Extract dominant color from an arbitrary image rectangle."""
-        ih, iw = img.shape[:2]
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(iw, x2), min(ih, y2)
-        if x2 - x1 < 10 or y2 - y1 < 10:
-            return None
-        region = img[y1:y2, x1:x2]
+    @staticmethod
+    def _hsv_to_color(region: np.ndarray) -> Optional[dict]:
+        """Convert an image region to a dominant color name+hex via HSV median."""
         if region.size == 0:
             return None
         rh, rw = region.shape[:2]
@@ -609,6 +547,7 @@ class FaceDetector:
         med_h = float(np.median(hsv[:, :, 0]))
         med_s = float(np.median(hsv[:, :, 1]))
         med_v = float(np.median(hsv[:, :, 2]))
+
         if med_s < 40:
             if med_v < 70:
                 return {"color_hex": "#333333", "color_name": "Black"}
@@ -630,6 +569,43 @@ class FaceDetector:
             return {"color_hex": "#8E24AA", "color_name": "Purple"}
         else:
             return {"color_hex": "#EC407A", "color_name": "Pink"}
+
+    def _extract_outfit_color(self, img: np.ndarray, bbox) -> Optional[dict]:
+        """Extract dominant outfit color from body region below face."""
+        x, y, fw, fh = bbox
+        h, w = img.shape[:2]
+        body_top = min(h, y + fh)
+        body_bot = min(h, y + fh + int(fh * 1.5))
+        body_left = max(0, x - int(fw * 0.15))
+        body_right = min(w, x + fw + int(fw * 0.15))
+        if body_bot <= body_top or body_right <= body_left:
+            return None
+        if body_bot - body_top < 10 or body_right - body_left < 10:
+            return None
+        body = img[body_top:body_bot, body_left:body_right]
+        return self._hsv_to_color(body)
+
+    def _extract_pants_color(self, img: np.ndarray, bbox) -> Optional[dict]:
+        """Extract pants color from lower body region below face."""
+        x, y, fw, fh = bbox
+        h, w = img.shape[:2]
+        pants_top = min(h, y + int(fh * 2.5))
+        pants_bot = min(h, y + int(fh * 4.5))
+        pants_left = max(0, x - int(fw * 0.2))
+        pants_right = min(w, x + fw + int(fw * 0.2))
+        if pants_bot - pants_top < 10 or pants_right - pants_left < 10:
+            return None
+        return self._extract_color_from_rect(img, pants_left, pants_top, pants_right, pants_bot)
+
+    def _extract_color_from_rect(self, img: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> Optional[dict]:
+        """Extract dominant color from an arbitrary image rectangle."""
+        ih, iw = img.shape[:2]
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(iw, x2), min(ih, y2)
+        if x2 - x1 < 10 or y2 - y1 < 10:
+            return None
+        region = img[y1:y2, x1:x2]
+        return self._hsv_to_color(region)
 
     def _face_in_body(self, face_bbox, body_bbox) -> bool:
         """Check if face center is within body bounding box."""
@@ -755,23 +731,7 @@ class FaceDetector:
 
         # Auto-ignore unknown faces that have been sitting for 30+ seconds
         if self._is_enabled("face"):
-            now_dt = _local_now()
-            changed = False
-            with self._face_mgr._lock:
-                for face in list(self._face_mgr.faces.values()):
-                    if face.status == "unknown":
-                        try:
-                            first = datetime.fromisoformat(face.first_seen)
-                            if first.tzinfo is None:
-                                first = first.astimezone()
-                            if (now_dt - first).total_seconds() >= self.AUTO_IGNORE_SECONDS:
-                                face.status = "ignored"
-                                changed = True
-                                logger.info(f"Auto-ignored face {face.id} (unlabeled for {self.AUTO_IGNORE_SECONDS}s)")
-                        except Exception:
-                            pass
-                if changed:
-                    self._face_mgr._save_faces()
+            self._face_mgr.auto_ignore_stale(self.AUTO_IGNORE_SECONDS)
 
         # Decode JPEG
         nparr = np.frombuffer(frame_bytes, np.uint8)
