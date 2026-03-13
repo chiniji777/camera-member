@@ -1,7 +1,7 @@
 """Face Detection & Recognition Manager
 
-Uses OpenCV YuNet (detection) + SFace (recognition) — no extra pip packages needed.
-Models are auto-downloaded on first run from OpenCV Zoo (~37MB total).
+Uses YOLOv8 (object detection: person/cat/dog) + InsightFace ArcFace (face recognition).
+Models are auto-downloaded on first run.
 """
 
 import json
@@ -9,7 +9,6 @@ import uuid
 import time
 import threading
 import logging
-import urllib.request
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, asdict
@@ -19,6 +18,24 @@ import cv2
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+# Lazy-loaded deep learning modules (imported on first use to keep startup fast)
+_yolo_cls = None
+_insightface_app = None
+
+def _get_yolo():
+    global _yolo_cls
+    if _yolo_cls is None:
+        from ultralytics import YOLO
+        _yolo_cls = YOLO
+    return _yolo_cls
+
+def _get_insightface_app():
+    global _insightface_app
+    if _insightface_app is None:
+        import insightface
+        _insightface_app = insightface.app.FaceAnalysis
+    return _insightface_app
 
 
 def _local_now() -> datetime:
@@ -38,18 +55,10 @@ CROPS_DIR = FACE_DATA_DIR / "crops"
 SIGHTINGS_IMG_DIR = FACE_DATA_DIR / "sightings_img"
 MODELS_DIR = FACE_DATA_DIR / "models"
 
-YUNET_MODEL = "face_detection_yunet_2023mar.onnx"
-SFACE_MODEL = "face_recognition_sface_2021dec.onnx"
-YUNET_URL = f"https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/{YUNET_MODEL}"
-SFACE_URL = f"https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/{SFACE_MODEL}"
+# YOLOv8 model file (auto-downloaded by ultralytics on first use)
+YOLO_MODEL_NAME = "yolov8n.pt"
 
-# YOLOv4-tiny for pet/object detection (COCO: dog=16, cat=15, person=0)
-YOLO_WEIGHTS = "yolov4-tiny.weights"
-YOLO_CFG = "yolov4-tiny.cfg"
-YOLO_WEIGHTS_URL = "https://github.com/AlexeyAB/darknet/releases/download/yolov4/yolov4-tiny.weights"
-YOLO_CFG_URL = "https://raw.githubusercontent.com/AlexeyAB/darknet/master/cfg/yolov4-tiny.cfg"
-
-# COCO class IDs we care about
+# COCO class IDs we care about (YOLOv8 uses same COCO IDs)
 COCO_PERSON = 0
 COCO_CAT = 15
 COCO_DOG = 16
@@ -65,7 +74,7 @@ COCO_NAMES = {COCO_PERSON: "person", COCO_CAT: "cat", COCO_DOG: "dog"}
 class Face:
     id: str
     name: str                    # "" for unknown
-    encodings: list[list[float]] # list of 128-d embeddings (multi-sample)
+    encodings: list[list[float]] # list of 512-d ArcFace embeddings (multi-sample)
     image_path: str              # relative: "face_data/crops/{id}.jpg"
     first_seen: str              # ISO datetime
     last_seen: str
@@ -88,7 +97,7 @@ class Sighting:
 # ---------------------------------------------------------------------------
 
 class FaceManager:
-    COSINE_THRESHOLD = 0.363  # SFace default; lower = stricter
+    COSINE_THRESHOLD = 0.45  # ArcFace threshold; lower = stricter
 
     def __init__(self):
         self.faces: dict[str, Face] = {}
@@ -330,24 +339,6 @@ class FaceManager:
 # FaceDetector — background worker
 # ---------------------------------------------------------------------------
 
-def _download_model(url: str, dest: Path):
-    """Download a file with progress logging."""
-    if dest.exists():
-        return
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Downloading model: {dest.name} ...")
-    try:
-        # Use urlopen + manual write to avoid urlretrieve temp-file issues on Google Drive
-        with urllib.request.urlopen(url) as resp:
-            data = resp.read()
-        dest.write_bytes(data)
-        logger.info(f"Downloaded {dest.name} ({dest.stat().st_size // 1024} KB)")
-    except Exception as e:
-        logger.error(f"Failed to download {url}: {e}")
-        if dest.exists():
-            dest.unlink()
-        raise
-
 
 class FaceDetector:
     DETECT_INTERVAL = 0.5   # seconds between scans
@@ -363,11 +354,8 @@ class FaceDetector:
         self._layout_mgr = None  # set via set_layout_manager()
         self._running = False
         self._threads: dict[str, threading.Thread] = {}
-        self._detector = None
-        self._recognizer = None
-        self._hog = None
-        self._yolo_net = None
-        self._yolo_output_layers = None
+        self._face_app = None       # InsightFace FaceAnalysis
+        self._yolo_model = None     # YOLOv8 model
         self._model_lock = threading.Lock()
         self._last_sighting: dict[tuple[str, str], float] = {}
         self._active_detections: dict[str, list[dict]] = {}  # cam_id -> detections
@@ -385,51 +373,43 @@ class FaceDetector:
         """Link to LayoutManager to read detection toggle/sensitivity settings."""
         self._layout_mgr = layout_mgr
 
-    def _ensure_models(self):
-        _download_model(YUNET_URL, MODELS_DIR / YUNET_MODEL)
-        _download_model(SFACE_URL, MODELS_DIR / SFACE_MODEL)
-
     def _init_models(self):
         with self._model_lock:
-            if self._detector is not None:
+            if self._face_app is not None:
                 return
-            self._ensure_models()
 
-            yunet_path = str(MODELS_DIR / YUNET_MODEL)
-            sface_path = str(MODELS_DIR / SFACE_MODEL)
+            # InsightFace for face detection + recognition (ArcFace 512-d)
+            try:
+                FaceAnalysis = _get_insightface_app()
+                self._face_app = FaceAnalysis(
+                    name="buffalo_l",
+                    root=str(MODELS_DIR),
+                    providers=["CPUExecutionProvider"],
+                )
+                self._face_app.prepare(ctx_id=-1, det_size=(640, 640))
+                logger.info("InsightFace (ArcFace) loaded for face detection + recognition")
+            except Exception as e:
+                logger.error(f"Failed to load InsightFace: {e}")
+                self._face_app = None
 
-            self._detector = cv2.FaceDetectorYN.create(
-                yunet_path, "", (320, 320),
-                score_threshold=0.7,
-                nms_threshold=0.3,
-                top_k=10,
-            )
-            self._recognizer = cv2.FaceRecognizerSF.create(sface_path, "")
-
-            # HOG person detector (built-in, no download needed)
-            self._hog = cv2.HOGDescriptor()
-            self._hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
-
-            # YOLOv4-tiny for pet detection
+            # YOLOv8 for person + pet detection (replaces HOG + YOLOv4-tiny)
             self._init_yolo()
 
-            logger.info("Face + body + pet detection models loaded")
+            logger.info("Deep learning models loaded (YOLOv8 + InsightFace)")
 
     def _init_yolo(self):
-        """Load YOLOv4-tiny model for pet/object detection."""
-        weights_path = MODELS_DIR / YOLO_WEIGHTS
-        cfg_path = MODELS_DIR / YOLO_CFG
-        _download_model(YOLO_WEIGHTS_URL, weights_path)
-        _download_model(YOLO_CFG_URL, cfg_path)
+        """Load YOLOv8n model for person + pet detection."""
         try:
-            self._yolo_net = cv2.dnn.readNet(str(weights_path), str(cfg_path))
-            layer_names = self._yolo_net.getLayerNames()
-            out_indices = self._yolo_net.getUnconnectedOutLayers()
-            self._yolo_output_layers = [layer_names[i - 1] for i in out_indices.flatten()]
-            logger.info("YOLOv4-tiny loaded for pet detection")
+            YOLO = _get_yolo()
+            model_path = MODELS_DIR / YOLO_MODEL_NAME
+            if model_path.exists():
+                self._yolo_model = YOLO(str(model_path))
+            else:
+                self._yolo_model = YOLO("yolov8n.pt")
+            logger.info("YOLOv8n loaded for person + pet detection")
         except Exception as e:
-            logger.error(f"Failed to load YOLO model: {e}")
-            self._yolo_net = None
+            logger.error(f"Failed to load YOLOv8: {e}")
+            self._yolo_model = None
 
     def start(self, camera_ids: list[str]):
         self._running = True
@@ -691,9 +671,35 @@ class FaceDetector:
             result.extend(pets)
         return result
 
+    def _run_yolo(self, img: np.ndarray, target_classes: set[int], conf_threshold: float) -> list[dict]:
+        """Run YOLOv8 and return detections for specified COCO classes.
+        Returns list of {bbox: [x,y,w,h] in pixels, class_id, confidence}."""
+        if self._yolo_model is None:
+            return []
+
+        results = self._yolo_model.predict(img, conf=conf_threshold, verbose=False)
+        detections = []
+
+        for r in results:
+            if r.boxes is None:
+                continue
+            for box in r.boxes:
+                class_id = int(box.cls[0])
+                if class_id not in target_classes:
+                    continue
+                conf = float(box.conf[0])
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                detections.append({
+                    "bbox": [int(x1), int(y1), int(x2 - x1), int(y2 - y1)],
+                    "class_id": class_id,
+                    "confidence": conf,
+                })
+
+        return detections
+
     def _detect_pets(self, cam_id: str, img: np.ndarray) -> list[dict]:
-        """Run YOLOv4-tiny to detect cats and dogs. Returns list of detections."""
-        if self._yolo_net is None:
+        """Run YOLOv8 to detect cats and dogs. Returns list of detections."""
+        if self._yolo_model is None:
             return []
 
         h, w = img.shape[:2]
@@ -702,53 +708,20 @@ class FaceDetector:
         sens = 50
         if self._layout_mgr:
             sens = self._layout_mgr.get_sensitivity("pet")
-        conf_threshold = 0.7 - sens * 0.0055  # range: 0.7 (sens=0) to 0.15 (sens=100)
+        conf_threshold = 0.7 - sens * 0.0055
         conf_threshold = max(0.1, conf_threshold)
 
-        # Prepare input blob (416x416)
-        blob = cv2.dnn.blobFromImage(img, 1 / 255.0, (416, 416), swapRB=True, crop=False)
-        self._yolo_net.setInput(blob)
-        outputs = self._yolo_net.forward(self._yolo_output_layers)
-
+        raw = self._run_yolo(img, COCO_PET_IDS, conf_threshold)
         pets = []
-        boxes = []
-        confidences = []
-        class_ids = []
-
-        for output in outputs:
-            for detection in output:
-                scores = detection[5:]
-                class_id = int(np.argmax(scores))
-                confidence = float(scores[class_id])
-
-                if class_id not in COCO_PET_IDS:
-                    continue
-                if confidence < conf_threshold:
-                    continue
-
-                center_x = int(detection[0] * w)
-                center_y = int(detection[1] * h)
-                bw = int(detection[2] * w)
-                bh = int(detection[3] * h)
-                x = center_x - bw // 2
-                y = center_y - bh // 2
-
-                boxes.append([x, y, bw, bh])
-                confidences.append(confidence)
-                class_ids.append(class_id)
-
-        # NMS to remove duplicates
-        if boxes:
-            indices = cv2.dnn.NMSBoxes(boxes, confidences, conf_threshold, 0.4)
-            for i in indices.flatten():
-                x, y, bw, bh = boxes[i]
-                pets.append({
-                    "bbox": [round(x / w, 4), round(y / h, 4),
-                             round(bw / w, 4), round(bh / h, 4)],
-                    "type": COCO_NAMES.get(class_ids[i], "pet"),
-                    "confidence": round(confidences[i], 3),
-                    "camera_id": cam_id,
-                })
+        for det in raw:
+            x, y, bw, bh = det["bbox"]
+            pets.append({
+                "bbox": [round(x / w, 4), round(y / h, 4),
+                         round(bw / w, 4), round(bh / h, 4)],
+                "type": COCO_NAMES.get(det["class_id"], "pet"),
+                "confidence": round(det["confidence"], 3),
+                "camera_id": cam_id,
+            })
 
         self._active_pets[cam_id] = pets
         return pets
@@ -814,48 +787,41 @@ class FaceDetector:
         else:
             self._active_pets.pop(cam_id, None)
 
-        # ── Phase 1: Face detection ──
+        # ── Phase 1: Face detection (InsightFace ArcFace) ──
         frame_faces = []  # collect face results for body linking
 
         if not self._is_enabled("face"):
-            # Skip face detection entirely
             self._active_detections.pop(cam_id, None)
-        else:
-            self._detector.setInputSize((w, h))
+        elif self._face_app is not None:
+            try:
+                # InsightFace expects BGR numpy array
+                ins_faces = self._face_app.get(img)
+            except Exception as e:
+                logger.error(f"InsightFace error: {e}")
+                ins_faces = []
 
-        faces = None
-        if self._is_enabled("face"):
-            # Apply sensitivity: map 0-100 to score_threshold 0.9-0.3
-            sens = 50
-            if self._layout_mgr:
-                sens = self._layout_mgr.get_sensitivity("face")
-            face_score = 0.9 - sens * 0.006  # range: 0.9 (sens=0) to 0.3 (sens=100)
-            self._detector.setScoreThreshold(max(0.2, face_score))
-            _, faces = self._detector.detect(img)
-
-        if faces is not None:
-            for face_data in faces:
-                bbox = face_data[:4].astype(int)
-                x, y, fw, fh = bbox
+            for face_obj in ins_faces:
+                # face_obj.bbox = [x1, y1, x2, y2], face_obj.embedding = 512-d
+                x1, y1, x2, y2 = [int(v) for v in face_obj.bbox]
+                fw = x2 - x1
+                fh = y2 - y1
 
                 if fw < self.MIN_FACE_SIZE:
                     continue
 
-                aligned = self._recognizer.alignCrop(img, face_data)
-                embedding = self._recognizer.feature(aligned)
-                enc_list = embedding.flatten().tolist()
+                enc_list = face_obj.embedding.tolist()
 
                 pad = int(max(fw, fh) * 0.2)
-                cx = max(0, x - pad)
-                cy = max(0, y - pad)
-                cx2 = min(w, x + fw + pad)
-                cy2 = min(h, y + fh + pad)
+                cx = max(0, x1 - pad)
+                cy = max(0, y1 - pad)
+                cx2 = min(w, x2 + pad)
+                cy2 = min(h, y2 + pad)
                 crop = img[cy:cy2, cx:cx2]
                 _, crop_jpg = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 crop_bytes = crop_jpg.tobytes()
 
-                shirt = self._extract_outfit_color(img, (x, y, fw, fh))
-                pants = self._extract_pants_color(img, (x, y, fw, fh))
+                shirt = self._extract_outfit_color(img, (x1, y1, fw, fh))
+                pants = self._extract_pants_color(img, (x1, y1, fw, fh))
                 matched, confidence = self._face_mgr.find_match(enc_list)
 
                 if matched:
@@ -884,7 +850,7 @@ class FaceDetector:
                         self._active_detections.setdefault(cam_id, []).append(detection)
 
                     frame_faces.append({
-                        "bbox": (x, y, fw, fh), "face_id": matched.id,
+                        "bbox": (x1, y1, fw, fh), "face_id": matched.id,
                         "name": matched.name, "confidence": confidence,
                     })
                 else:
@@ -903,56 +869,29 @@ class FaceDetector:
                         self._active_detections.setdefault(cam_id, []).append(detection)
 
                     frame_faces.append({
-                        "bbox": (x, y, fw, fh), "face_id": new_face.id,
+                        "bbox": (x1, y1, fw, fh), "face_id": new_face.id,
                         "name": new_face.name or "New Customer", "confidence": 0,
                     })
 
-        # ── Phase 2: Body detection (HOG) — conditional on human detection toggle ──
-        bodies = None
-        weights = []
-        if self._is_enabled("human"):
-            detect_h = 320
-            scale_factor = h / detect_h
-            detect_w = int(w * detect_h / h)
-            small_frame = cv2.resize(img, (detect_w, detect_h))
-
-            # Apply sensitivity: map 0-100 to hitThreshold 0.8-0.0
-            sens = 50
-            if self._layout_mgr:
-                sens = self._layout_mgr.get_sensitivity("human")
-            hit_thresh = 0.8 - sens * 0.008  # range: 0.8 (sens=0) to 0.0 (sens=100)
-
-            bodies, weights = self._hog.detectMultiScale(
-                small_frame, winStride=(8, 8), padding=(4, 4), scale=1.05,
-                hitThreshold=max(0.0, hit_thresh),
-            )
-        else:
-            detect_h = 320
-            scale_factor = h / detect_h
-
+        # ── Phase 2: Body detection (YOLOv8 person) — replaces HOG ──
         tracked = []
         used_faces = set()
 
-        if bodies is not None and len(bodies) > 0:
-            for i, (bx, by, bw, bh) in enumerate(bodies):
-                # Filter low-confidence detections
-                conf = float(weights[i]) if i < len(weights) else 0
-                if conf < 0.4:
-                    continue
+        person_detections = []
+        if self._is_enabled("human") and self._yolo_model is not None:
+            # Sensitivity maps to confidence threshold
+            sens = 50
+            if self._layout_mgr:
+                sens = self._layout_mgr.get_sensitivity("human")
+            conf_threshold = 0.7 - sens * 0.0055
+            conf_threshold = max(0.1, conf_threshold)
 
-                # Scale back to original coords
-                bx_o = int(bx * scale_factor)
-                by_o = int(by * scale_factor)
-                bw_o = int(bw * scale_factor)
-                bh_o = int(bh * scale_factor)
+            person_detections = self._run_yolo(img, {COCO_PERSON}, conf_threshold)
 
-                # Filter: body must be taller than wide (aspect ratio > 1.2)
-                if bh_o < bw_o * 1.2:
-                    continue
-
-                # Filter: body must be minimum size (at least 5% of frame height)
-                if bh_o < h * 0.05:
-                    continue
+        if person_detections:
+            for det in person_detections:
+                bx_o, by_o, bw_o, bh_o = det["bbox"]
+                conf = det["confidence"]
 
                 person_name = ""
                 person_face_id = ""

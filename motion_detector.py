@@ -1,13 +1,12 @@
-"""Motion Detection via frame pixel difference.
+"""Motion Detection via MOG2 Background Subtraction.
 
-Compares consecutive JPEG frames per camera, calculates the fraction of
-changed pixels, and fires callbacks when motion exceeds the sensitivity threshold.
+Uses OpenCV's MOG2 (Mixture of Gaussians) for adaptive background modeling.
+Learns the background automatically — resistant to lighting changes and shadows.
 """
-import io
 import time
 import logging
 import threading
-from typing import Optional, Callable
+from typing import Callable
 
 import cv2
 import numpy as np
@@ -16,17 +15,17 @@ logger = logging.getLogger(__name__)
 
 
 class MotionDetector:
-    """Detects motion by comparing consecutive JPEG frames per camera."""
+    """Detects motion using MOG2 background subtraction per camera."""
 
     def __init__(self, sensitivity: int = 50, debounce_sec: float = 2.0):
         """
-        sensitivity: 0-100 scale. Internally mapped to a pixel-change threshold.
+        sensitivity: 0-100 scale. Internally mapped to MOG2 thresholds.
             0 = least sensitive (needs huge change), 100 = most sensitive (tiny change triggers).
         """
         self.debounce_sec = debounce_sec
         self._sensitivity = sensitivity
-        self._prev_frames: dict[str, np.ndarray] = {}  # cam_id -> grayscale array
-        self._last_motion: dict[str, float] = {}        # cam_id -> timestamp
+        self._bg_subtractors: dict[str, cv2.BackgroundSubtractorMOG2] = {}  # cam_id -> MOG2
+        self._last_motion: dict[str, float] = {}
         self._callbacks: list[Callable] = []
         self._enabled = False
         self._lock = threading.Lock()
@@ -39,25 +38,33 @@ class MotionDetector:
     def sensitivity(self, value: int):
         self._sensitivity = max(0, min(100, value))
 
-    def _get_threshold(self) -> tuple[int, float]:
-        """Convert 0-100 sensitivity to (pixel_diff_threshold, change_fraction_threshold).
-        Higher sensitivity = lower thresholds = easier to trigger.
+    def _get_change_threshold(self) -> float:
+        """Convert 0-100 sensitivity to change_fraction_threshold.
+        Higher sensitivity = lower threshold = easier to trigger.
         """
-        # pixel_diff: how much a single pixel must change (30 at sens=50)
-        pixel_diff = int(60 - self._sensitivity * 0.5)  # range: 60 (sens=0) to 10 (sens=100)
-        pixel_diff = max(5, pixel_diff)
-
-        # change_fraction: what % of pixels must change
         change_frac = 0.15 - self._sensitivity * 0.0014  # range: 0.15 (sens=0) to 0.01 (sens=100)
-        change_frac = max(0.005, change_frac)
+        return max(0.005, change_frac)
 
-        return pixel_diff, change_frac
+    def _get_or_create_subtractor(self, cam_id: str) -> cv2.BackgroundSubtractorMOG2:
+        """Get or create a MOG2 background subtractor for a camera."""
+        if cam_id not in self._bg_subtractors:
+            # varThreshold: higher = less sensitive to small changes
+            # detectShadows: True to detect and mark shadows separately
+            var_threshold = int(60 - self._sensitivity * 0.4)  # range: 60 (sens=0) to 20 (sens=100)
+            var_threshold = max(10, var_threshold)
+            subtractor = cv2.createBackgroundSubtractorMOG2(
+                history=500,
+                varThreshold=var_threshold,
+                detectShadows=True,
+            )
+            self._bg_subtractors[cam_id] = subtractor
+        return self._bg_subtractors[cam_id]
 
     def set_enabled(self, enabled: bool):
         self._enabled = enabled
         if not enabled:
             with self._lock:
-                self._prev_frames.clear()
+                self._bg_subtractors.clear()
 
     @property
     def enabled(self) -> bool:
@@ -68,45 +75,42 @@ class MotionDetector:
         self._callbacks.append(callback)
 
     def check_frame(self, cam_id: str, jpeg_bytes: bytes):
-        """Called with each new JPEG frame. Compares with previous frame."""
+        """Called with each new JPEG frame. Uses MOG2 to detect motion."""
         if not self._enabled:
             return
 
-        # Decode JPEG to grayscale
+        # Decode JPEG to color (MOG2 works better with color for shadow detection)
         nparr = np.frombuffer(jpeg_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if img is None:
             return
 
-        # Downsample for speed (160px wide)
-        h, w = img.shape
-        if w > 160:
-            scale = 160 / w
-            img = cv2.resize(img, (160, int(h * scale)))
+        # Downsample for speed (320px wide)
+        h, w = img.shape[:2]
+        if w > 320:
+            scale = 320 / w
+            img = cv2.resize(img, (320, int(h * scale)))
 
         with self._lock:
-            prev = self._prev_frames.get(cam_id)
-            self._prev_frames[cam_id] = img
+            subtractor = self._get_or_create_subtractor(cam_id)
 
-        if prev is None:
-            return
+        # Apply MOG2 — returns foreground mask
+        # Pixels: 0 = background, 127 = shadow, 255 = foreground
+        fg_mask = subtractor.apply(img)
 
-        # Ensure same shape
-        if prev.shape != img.shape:
-            return
+        # Only count definite foreground (255), ignore shadows (127)
+        foreground_pixels = np.count_nonzero(fg_mask == 255)
+        total_pixels = fg_mask.size
+        intensity = foreground_pixels / total_pixels
 
-        # Calculate pixel difference
-        pixel_thresh, change_thresh = self._get_threshold()
-        diff = cv2.absdiff(prev, img)
-        changed = np.count_nonzero(diff > pixel_thresh)
-        intensity = changed / diff.size
+        change_thresh = self._get_change_threshold()
 
         if intensity >= change_thresh:
             now = time.time()
             last = self._last_motion.get(cam_id, 0)
             if now - last >= self.debounce_sec:
                 self._last_motion[cam_id] = now
-                logger.debug(f"Motion on {cam_id}: {intensity:.2%} (thresh={change_thresh:.3f})")
+                logger.debug(f"Motion on {cam_id}: {intensity:.2%} (thresh={change_thresh:.3f}, MOG2)")
                 for cb in self._callbacks:
                     try:
                         cb(cam_id, intensity)
