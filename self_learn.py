@@ -9,6 +9,7 @@ import uuid
 import shutil
 import logging
 import random
+import threading
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass, asdict
@@ -84,7 +85,10 @@ class FeedbackCollector:
         # Save crop image if provided
         image_path = ""
         if image_data:
-            class_dir = TRAINING_DIR / label
+            safe_label = label.replace("/", "_").replace("..", "_").replace("\\", "_").strip()
+            if not safe_label:
+                safe_label = "unknown"
+            class_dir = TRAINING_DIR / safe_label
             class_dir.mkdir(parents=True, exist_ok=True)
             img_filename = f"{feedback_id}.jpg"
             img_path = class_dir / img_filename
@@ -354,11 +358,12 @@ class ModelTrainer:
 
     def __init__(self, model_manager: ModelManager):
         self.model_manager = model_manager
+        self._lock = threading.Lock()
         self.is_training = False
 
     def train(self, dataset_yaml: Path, epochs: int = 50, imgsz: int = 640) -> Optional[ModelVersion]:
         """Fine-tune YOLOv8 with dataset. Returns new ModelVersion or None on failure."""
-        if self.is_training:
+        if not self._lock.acquire(blocking=False):
             logger.warning("Training already in progress")
             return None
 
@@ -414,6 +419,7 @@ class ModelTrainer:
             return None
         finally:
             self.is_training = False
+            self._lock.release()
 
 
 # ─── Main Pipeline ────────────────────────────────────
