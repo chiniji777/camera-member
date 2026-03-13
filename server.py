@@ -20,6 +20,7 @@ from face_manager import FaceManager, FaceDetector
 from smart_home import SmartHomeScanner
 from layout_manager import LayoutManager
 from motion_detector import MotionDetector
+from self_learn import SelfLearnPipeline
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,6 +43,7 @@ face_detector.set_layout_manager(layout_mgr)
 motion_detector = MotionDetector(
     sensitivity=layout_mgr.get_sensitivity("motion"),
 )
+self_learn = SelfLearnPipeline()
 stream_mgr.motion_detector = motion_detector
 
 # WebSocket clients for motion events
@@ -545,6 +547,68 @@ async def motion_ws(websocket: WebSocket):
     finally:
         if websocket in _motion_clients:
             _motion_clients.remove(websocket)
+
+
+# --- Self-Learning API ---
+
+class FeedbackRequest(BaseModel):
+    detection_id: str
+    correct: bool
+    label: str
+
+
+@app.post("/api/feedback")
+async def submit_feedback(req: FeedbackRequest):
+    """Submit user feedback on a detection result."""
+    # Try to get crop image from the detection's sighting
+    image_data = None
+    for s in face_mgr.sightings:
+        if s.id == req.detection_id and s.image_path:
+            img_path = Path(s.image_path)
+            if img_path.exists():
+                image_data = img_path.read_bytes()
+            break
+
+    feedback = self_learn.submit_feedback(
+        detection_id=req.detection_id,
+        correct=req.correct,
+        label=req.label,
+        image_data=image_data,
+    )
+    return {"ok": True, "feedback_id": feedback.id, "ready_to_retrain": self_learn.should_retrain()}
+
+
+@app.get("/api/feedback/summary")
+async def feedback_summary():
+    """Return feedback counts: correct/incorrect per class."""
+    return self_learn.feedback_collector.get_summary()
+
+
+@app.get("/api/model-stats")
+async def model_stats():
+    """Return model accuracy, version, feedback total, last retrain date."""
+    return self_learn.get_model_stats()
+
+
+@app.post("/api/retrain")
+async def trigger_retrain(force: bool = Query(False)):
+    """Trigger model retrain. Use force=true to skip minimum data check."""
+    import asyncio
+    result = await asyncio.to_thread(self_learn.retrain, force=force)
+    return result
+
+
+class RollbackRequest(BaseModel):
+    version: str
+
+
+@app.post("/api/model-rollback")
+async def model_rollback(req: RollbackRequest):
+    """Rollback to a previous model version."""
+    version = self_learn.model_manager.rollback(req.version)
+    if not version:
+        raise HTTPException(404, f"Version '{req.version}' not found or model file missing")
+    return {"ok": True, "active_version": version.version, "accuracy": version.accuracy}
 
 
 # --- Static Files (Web UI) ---
