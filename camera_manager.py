@@ -385,3 +385,98 @@ class StreamManager:
         self._running = False
         for cam_id in list(self.processes.keys()):
             self.stop_stream(cam_id)
+
+
+class AudioStreamManager:
+    """Manages FFmpeg processes that extract audio from RTSP as MP3."""
+
+    def __init__(self):
+        self.processes: dict[str, subprocess.Popen] = {}
+        self._running = True
+        self._chunks: dict[str, bytes] = {}
+        self._chunk_locks: dict[str, threading.Lock] = {}
+        self._cameras: dict[str, Camera] = {}
+
+    def start_audio(self, camera: Camera):
+        if camera.type != "rtsp":
+            return
+
+        ffmpeg_path = _find_ffmpeg()
+        if not ffmpeg_path:
+            return
+
+        self._cameras[camera.id] = camera
+        self._chunk_locks.setdefault(camera.id, threading.Lock())
+
+        cmd = [
+            ffmpeg_path,
+            "-rtsp_transport", "tcp",
+            "-i", camera.url,
+            "-vn",
+            "-acodec", "libmp3lame",
+            "-ab", "64k",
+            "-ar", "8000",
+            "-ac", "1",
+            "-f", "mp3",
+            "pipe:1",
+        ]
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                bufsize=0,
+                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+            )
+            self.processes[camera.id] = proc
+
+            t = threading.Thread(
+                target=self._read_audio, args=(camera.id, proc), daemon=True
+            )
+            t.start()
+            logger.info(f"Started audio stream for {camera.name} ({camera.id})")
+        except Exception as e:
+            logger.error(f"Failed to start audio FFmpeg for {camera.name}: {e}")
+
+    def _read_audio(self, cam_id: str, proc: subprocess.Popen):
+        pipe = proc.stdout
+        try:
+            while self._running and cam_id in self.processes:
+                chunk = pipe.read(4096)
+                if not chunk:
+                    break
+                with self._chunk_locks[cam_id]:
+                    self._chunks[cam_id] = chunk
+        except Exception as e:
+            logger.error(f"Audio reader error for {cam_id}: {e}")
+        finally:
+            if self._running and cam_id in self._cameras:
+                logger.warning(f"Audio FFmpeg for {cam_id} exited, restarting in 2s")
+                time.sleep(2)
+                self.processes.pop(cam_id, None)
+                if self._running and cam_id in self._cameras:
+                    self.start_audio(self._cameras[cam_id])
+
+    def get_chunk(self, cam_id: str) -> Optional[bytes]:
+        lock = self._chunk_locks.get(cam_id)
+        if lock is None:
+            return None
+        with lock:
+            return self._chunks.get(cam_id)
+
+    def stop_audio(self, cam_id: str):
+        proc = self.processes.pop(cam_id, None)
+        if proc:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        self._chunks.pop(cam_id, None)
+        self._cameras.pop(cam_id, None)
+
+    def stop_all(self):
+        self._running = False
+        for cam_id in list(self.processes.keys()):
+            self.stop_audio(cam_id)

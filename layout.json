@@ -1,0 +1,274 @@
+{
+  "active_layout": "1x1",
+  "motion_mode": "manual",
+  "layouts": {
+    "1x1": {
+      "type": "grid",
+      "slots": [
+        {
+          "camera_id": "fd80836d",
+          "name": ""
+        }
+      ]
+    },
+    "2x2": {
+      "type": "grid",
+      "slots": [
+        {
+          "camera_id": "fd80836d",
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        }
+      ]
+    },
+    "3x3": {
+      "type": "grid",
+      "slots": [
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        }
+      ]
+    },
+    "4x4": {
+      "type": "grid",
+      "slots": [
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        }
+      ]
+    },
+    "1+7": {
+      "type": "spotlight",
+      "big": [
+        {
+          "camera_id": null,
+          "name": ""
+        }
+      ],
+      "small": [
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        }
+      ]
+    },
+    "2+14": {
+      "type": "spotlight",
+      "big": [
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        }
+      ],
+      "small": [
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        },
+        {
+          "camera_id": null,
+          "name": ""
+        }
+      ]
+    }
+  },
+  "detection": {
+    "motion": {
+      "enabled": false,
+      "sensitivity": 50
+    },
+    "human": {
+      "enabled": true,
+      "sensitivity": 50
+    },
+    "face": {
+      "enabled": true,
+      "sensitivity": 50
+    },
+    "pet": {
+      "enabled": false,
+      "sensitivity": 50
+    }
+  }
+}

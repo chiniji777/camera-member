@@ -11,16 +11,18 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from typing import Optional
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, Response
 from pydantic import BaseModel
 from pathlib import Path
-from camera_manager import CameraManager, StreamManager, auto_resolve_cameras
+from camera_manager import CameraManager, StreamManager, AudioStreamManager, auto_resolve_cameras
 from discovery import discover_onvif_cameras, get_rtsp_url_from_onvif
 from face_manager import FaceManager, FaceDetector
 from smart_home import SmartHomeScanner
 from layout_manager import LayoutManager
 from motion_detector import MotionDetector
 from self_learn import SelfLearnPipeline
+from gate_automation import GateAutomation
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,6 +33,7 @@ logger = logging.getLogger(__name__)
 camera_mgr = CameraManager()
 stream_mgr = StreamManager()
 stream_mgr.set_camera_manager(camera_mgr)
+audio_mgr = AudioStreamManager()
 face_mgr = FaceManager()
 face_detector = FaceDetector(stream_mgr, face_mgr)
 smart_home = SmartHomeScanner()
@@ -79,6 +82,36 @@ def _on_motion(cam_id: str, intensity: float):
 motion_detector.on_motion(_on_motion)
 
 
+# --- Voice Command: Gate control via Smart Home API ---
+SMART_HOME_API = "https://home.thinkfirstconsult.com"
+SMART_HOME_API_KEY = "e3356486972de7575891ab81a5d26d32d101f3b6f812dbe5"
+GATE_DEVICE_ID = "tuya_eb1ded1455fd293487dapn"
+
+
+def _send_gate_command(channel: int, label: str):
+    """Send gate command to smart home API."""
+    import requests
+    channels = [
+        {"outlet": 0, "power": channel == 0},
+        {"outlet": 1, "power": channel == 1},
+        {"outlet": 2, "power": channel == 2},
+    ]
+    try:
+        resp = requests.post(
+            f"{SMART_HOME_API}/api/devices/{GATE_DEVICE_ID}/command",
+            json={"commands": {"channels": channels}},
+            headers={"x-api-key": SMART_HOME_API_KEY},
+            timeout=10,
+            verify=True,
+        )
+        logger.info(f"[Gate] {label} → {resp.status_code}: {resp.text[:100]}")
+    except Exception as e:
+        logger.error(f"[Gate] Failed to send command: {e}")
+
+
+gate_auto = GateAutomation(on_gate_command=_send_gate_command)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Auto-resolve camera IPs if they changed (e.g. after power outage / DHCP)
@@ -89,6 +122,7 @@ async def lifespan(app: FastAPI):
     for cam in camera_mgr.list_all():
         if cam.enabled:
             stream_mgr.start_stream(cam)
+            audio_mgr.start_audio(cam)
     logger.info(f"Loaded {len(camera_mgr.cameras)} camera(s)")
 
     # Start face detection on all active cameras
@@ -102,14 +136,44 @@ async def lifespan(app: FastAPI):
         motion_detector.set_enabled(True)
         logger.info("Motion detection enabled at startup")
 
+    # Start gate automation on first enabled RTSP camera
+    for cam in camera_mgr.list_all():
+        if cam.enabled and cam.type == "rtsp":
+            gate_auto.start(cam.id)
+            break
+
     yield
 
+    gate_auto.stop()
     face_detector.stop()
     stream_mgr.stop_all()
+    audio_mgr.stop_all()
     logger.info("All streams stopped")
 
 
 app = FastAPI(title="LAN Camera Viewer", lifespan=lifespan)
+
+# Allow embedding in iframe from arra-office and CORS for API calls
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3456"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+
+class AllowIframeMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        # Remove X-Frame-Options to allow iframe embedding
+        if "x-frame-options" in response.headers:
+            del response.headers["x-frame-options"]
+        return response
+
+app.add_middleware(AllowIframeMiddleware)
 
 STATIC_DIR = Path("static")
 
@@ -157,9 +221,53 @@ async def add_camera(req: AddCameraRequest):
     cam = camera_mgr.add(req.name, req.url, req.type)
     if cam.type == "rtsp":
         stream_mgr.start_stream(cam)
+        audio_mgr.start_audio(cam)
         face_detector.add_camera(cam.id)
     logger.info(f"Added camera: {cam.name} ({cam.type}) -> {cam.url}")
     return {"id": cam.id, "name": cam.name}
+
+
+class GateCommand(BaseModel):
+    channel: int
+    label: str
+
+@app.post("/api/gate/command")
+async def gate_command(cmd: GateCommand):
+    """Send gate command from UI buttons."""
+    if cmd.channel not in (0, 1, 2):
+        raise HTTPException(400, "Invalid channel")
+    _send_gate_command(cmd.channel, cmd.label)
+    return {"ok": True, "channel": cmd.channel, "label": cmd.label}
+
+
+@app.get("/api/gate/auto/status")
+async def gate_auto_status():
+    """Get gate automation status."""
+    return gate_auto.get_status()
+
+
+@app.put("/api/cameras/{cam_id}/toggle")
+async def toggle_camera(cam_id: str):
+    """Enable or disable a camera stream."""
+    cam = camera_mgr.get(cam_id)
+    if not cam:
+        raise HTTPException(404, "Camera not found")
+
+    cam.enabled = not cam.enabled
+    camera_mgr._save()
+
+    if cam.enabled:
+        stream_mgr.start_stream(cam)
+        audio_mgr.start_audio(cam)
+        face_detector.add_camera(cam.id)
+        logger.info(f"Camera {cam.name} enabled")
+    else:
+        face_detector.remove_camera(cam_id)
+        stream_mgr.stop_stream(cam_id)
+        audio_mgr.stop_audio(cam_id)
+        logger.info(f"Camera {cam.name} disabled")
+
+    return {"ok": True, "id": cam.id, "enabled": cam.enabled}
 
 
 @app.delete("/api/cameras/{cam_id}")
@@ -249,6 +357,27 @@ async def mjpeg_feed(cam_id: str):
     return StreamingResponse(
         generate(),
         media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-cache, no-store", "Access-Control-Allow-Origin": "*"},
+    )
+
+
+@app.get("/streams/{cam_id}/audio")
+async def audio_feed(cam_id: str):
+    """MP3 audio stream for a camera."""
+    cam = camera_mgr.get(cam_id)
+    if not cam:
+        raise HTTPException(404, "Camera not found")
+
+    async def generate():
+        while True:
+            chunk = audio_mgr.get_chunk(cam_id)
+            if chunk:
+                yield chunk
+            await asyncio.sleep(0.1)
+
+    return StreamingResponse(
+        generate(),
+        media_type="audio/mpeg",
         headers={"Cache-Control": "no-cache, no-store", "Access-Control-Allow-Origin": "*"},
     )
 

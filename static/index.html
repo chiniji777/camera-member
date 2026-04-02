@@ -157,6 +157,77 @@
   .tile .quality-btn.hd { color: #8b6b4a; border-color: #8b6b4a; }
   .tile .quality-btn.switching { opacity: 1; color: #ff9800; border-color: #ff9800; }
 
+  .tile .audio-btn {
+    position: absolute;
+    bottom: 8px;
+    left: 8px;
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(6px);
+    border: none;
+    color: #aaa;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    opacity: 0;
+    transition: opacity 0.2s;
+    z-index: 10;
+  }
+  .tile:hover .audio-btn { opacity: 1; }
+  .tile .audio-btn.on { color: #4caf50; opacity: 1; }
+
+  .tile .power-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(6px);
+    border: none;
+    color: #666;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    opacity: 0;
+    transition: opacity 0.2s;
+    z-index: 10;
+  }
+  .tile:hover .power-btn { opacity: 1; }
+  .tile .power-btn.on { color: #4caf50; }
+
+  /* Gate control buttons */
+  .gate-controls {
+    position: absolute;
+    bottom: 8px;
+    right: 8px;
+    display: flex;
+    gap: 4px;
+    z-index: 10;
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+  .tile:hover .gate-controls { opacity: 1; }
+  .gate-btn {
+    background: rgba(0,0,0,0.7);
+    backdrop-filter: blur(6px);
+    border: 1px solid rgba(255,255,255,0.15);
+    color: #ddd;
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 500;
+    transition: all 0.15s;
+  }
+  .gate-btn:hover { background: rgba(139,107,74,0.8); color: #fff; }
+  .gate-btn:active { transform: scale(0.95); }
+  .gate-btn.open { border-color: #4caf50; }
+  .gate-btn.open:hover { background: rgba(76,175,80,0.8); }
+  .gate-btn.stop { border-color: #ff9800; }
+  .gate-btn.stop:hover { background: rgba(255,152,0,0.8); }
+  .gate-btn.close { border-color: #f44336; }
+  .gate-btn.close:hover { background: rgba(244,67,54,0.8); }
+
   /* --- Greeting overlay --- */
   .tile .greeting-overlay {
     position: absolute;
@@ -1054,6 +1125,7 @@
 
 <!-- Toolbar -->
 <div class="toolbar">
+  <a href="http://localhost:3456/camera" style="display:flex;align-items:center;gap:4px;padding:6px 12px;border:1px solid #c4b8a8;border-radius:4px;background:rgba(139,107,74,0.08);color:#8b6b4a;text-decoration:none;font-size:12px;font-weight:600;white-space:nowrap;transition:all .15s" onmouseover="this.style.background='#8b6b4a';this.style.color='#fff'" onmouseout="this.style.background='rgba(139,107,74,0.08)';this.style.color='#8b6b4a'">&#x1F52E; Arra Office</a>
   <h1>LAN Camera Viewer</h1>
 
   <button onclick="switchLayout('1x1')" id="lay-1x1" class="layout-btn">1x1</button>
@@ -1391,6 +1463,51 @@ function createSlotTile(slot, slotType, index) {
     });
     tile.appendChild(qBtn);
   }
+
+  // Audio mute/unmute button
+  var audioBtn = document.createElement('button');
+  audioBtn.className = 'audio-btn';
+  audioBtn.textContent = '\uD83D\uDD07';
+  audioBtn.title = 'Enable audio';
+  audioBtn.dataset.camId = cam.id;
+  audioBtn.dataset.muted = 'true';
+  audioBtn.addEventListener('click', function(e) {
+    e.stopPropagation();
+    toggleAudio(cam.id, audioBtn);
+  });
+  tile.appendChild(audioBtn);
+
+  // Camera power button
+  var powerBtn = document.createElement('button');
+  powerBtn.className = 'power-btn' + (cam.enabled ? ' on' : '');
+  powerBtn.textContent = '\u23FB';
+  powerBtn.title = cam.enabled ? 'Disable camera' : 'Enable camera';
+  powerBtn.addEventListener('click', function(e) {
+    e.stopPropagation();
+    toggleCameraPower(cam.id, powerBtn);
+  });
+  tile.appendChild(powerBtn);
+
+  // Gate control buttons
+  var gateDiv = document.createElement('div');
+  gateDiv.className = 'gate-controls';
+  var gateActions = [
+    { label: 'เปิด', ch: 0, cls: 'open' },
+    { label: 'หยุด', ch: 1, cls: 'stop' },
+    { label: 'ปิด', ch: 2, cls: 'close' },
+  ];
+  gateActions.forEach(function(action) {
+    var btn = document.createElement('button');
+    btn.className = 'gate-btn ' + action.cls;
+    btn.textContent = action.label;
+    btn.title = action.label + 'ประตู';
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      sendGateCommand(action.ch, action.label);
+    });
+    gateDiv.appendChild(btn);
+  });
+  tile.appendChild(gateDiv);
 
   // Motion badge
   var motionBadge = document.createElement('div');
@@ -1800,6 +1917,69 @@ async function switchQuality(camId, current) {
       qBtn.textContent = current === 'high' ? 'HD' : 'SD';
       qBtn.className = 'quality-btn' + (current === 'high' ? ' hd' : '');
     }
+  }
+}
+
+// --- Audio toggle ---
+var _audioElements = {};
+function toggleAudio(camId, btn) {
+  var isMuted = btn.dataset.muted === 'true';
+  if (isMuted) {
+    // Start audio
+    var audio = new Audio(API + '/streams/' + camId + '/audio');
+    audio.play().catch(function(e) { console.warn('Audio play failed:', e); });
+    _audioElements[camId] = audio;
+    btn.textContent = '\uD83D\uDD0A';
+    btn.title = 'Mute audio';
+    btn.dataset.muted = 'false';
+    btn.classList.add('on');
+  } else {
+    // Stop audio
+    if (_audioElements[camId]) {
+      _audioElements[camId].pause();
+      _audioElements[camId].src = '';
+      delete _audioElements[camId];
+    }
+    btn.textContent = '\uD83D\uDD07';
+    btn.title = 'Enable audio';
+    btn.dataset.muted = 'true';
+    btn.classList.remove('on');
+  }
+}
+
+// --- Gate command ---
+async function sendGateCommand(channel, label) {
+  try {
+    var res = await fetch(API + '/api/gate/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel: channel, label: label }),
+    });
+    if (res.ok) {
+      console.log('Gate command sent:', label);
+    } else {
+      console.error('Gate command failed:', res.status);
+    }
+  } catch (e) {
+    console.error('Gate command error:', e);
+  }
+}
+
+// --- Camera power toggle ---
+async function toggleCameraPower(camId, btn) {
+  btn.textContent = '...';
+  try {
+    var res = await fetch(API + '/api/cameras/' + camId + '/toggle', { method: 'PUT' });
+    var data = await res.json();
+    btn.textContent = '\u23FB';
+    btn.className = 'power-btn' + (data.enabled ? ' on' : '');
+    btn.title = data.enabled ? 'Disable camera' : 'Enable camera';
+    // Reload to refresh stream
+    await loadCameras();
+    renderLayout();
+  } catch (e) {
+    btn.textContent = '\u23FB';
+    console.error('Failed to toggle camera:', e);
   }
 }
 
