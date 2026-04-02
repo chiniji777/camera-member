@@ -1,10 +1,8 @@
-"""Gate Automation — Vision-based gate control using camera feed.
+"""Gate Automation — Turn signal / hazard detection for gate control.
 
-Monitors the camera for:
-1. Green car in parking zone + headlights ON → Open gate
-2. Car leaves parking zone + gate still open → Close gate
-
-Runs as a background thread, analyzing frames from the MJPEG stream.
+Monitors the camera for orange blinking (turn signal or hazard):
+- Blink detected while gate closed/unknown → Open gate
+- Blink detected while gate open → Close gate
 """
 import cv2
 import numpy as np
@@ -18,31 +16,27 @@ from enum import Enum
 logger = logging.getLogger(__name__)
 
 # --- Configuration ---
-# Parking zone (normalized 0-1 coordinates relative to frame)
-PARKING_ZONE = {
-    "x1": 0.30, "y1": 0.15,
-    "x2": 0.82, "y2": 0.90,
+# Car front zone (normalized 0-1)
+CAR_FRONT_ZONE = {
+    "x1": 0.20, "y1": 0.10,
+    "x2": 0.65, "y2": 0.45,
 }
 
-# HSV range for olive-green car
-GREEN_CAR_HSV = {
-    "lower": (15, 8, 50),
-    "upper": (60, 100, 210),
-}
+# Orange/amber HSV range for turn signals
+ORANGE_HSV_LOWER = (5, 100, 150)
+ORANGE_HSV_UPPER = (25, 255, 255)
 
-# Minimum contour area to be considered a car (pixels)
-MIN_CAR_AREA = 100000
-
-# Car movement detection
-# Track centroid of car contour — if it moves significantly, car is moving
-CAR_MOVEMENT_THRESHOLD = 30  # pixels centroid must move to count as "moving"
-CAR_MOVING_CONFIRM_FRAMES = 3  # must see movement in N consecutive checks
+# Detection
+MIN_ORANGE_PIXELS = 5000       # min orange pixels to count as "signal ON" (real signal = 10k+)
+BLINK_CONFIRM_COUNT = 3        # need 3 blink cycles to confirm (prevent false trigger)
+BLINK_WINDOW_SECONDS = 8.0     # time window to accumulate blinks
+COOLDOWN_SECONDS = 10.0        # cooldown after command sent
 
 # Timing
-CHECK_INTERVAL = 2.0  # seconds between frame checks
-CAR_GONE_CONFIRM_SECONDS = 15  # wait N seconds to confirm car actually left
-GATE_CLOSE_DELAY = 10  # seconds after car leaves to close gate
-HEADLIGHT_CONFIRM_SECONDS = 3  # headlights must be on for N seconds
+CHECK_INTERVAL = 0.25  # 4 fps
+
+# Rate limiting
+MIN_COMMAND_INTERVAL = 10.0
 
 
 class GateState(Enum):
@@ -52,7 +46,7 @@ class GateState(Enum):
 
 
 class GateAutomation:
-    """Monitor camera and auto-control gate based on car detection."""
+    """Monitor camera and toggle gate on any orange blink."""
 
     def __init__(
         self,
@@ -64,23 +58,17 @@ class GateAutomation:
         self._running = False
         self._thread: Optional[threading.Thread] = None
 
-        # State tracking
+        # State
         self._gate_state = GateState.UNKNOWN
-        self._car_present = False
-        self._car_moving = False
-        self._car_gone_since: Optional[float] = None
-        self._gate_opened_at: Optional[float] = None
         self._last_gate_action: Optional[float] = None
+        self._last_command_time: float = 0
 
-        # Car movement tracking
-        self._last_car_centroid: Optional[tuple] = None
-        self._movement_count = 0  # consecutive frames with movement
-
-        # Prevent rapid gate commands (min 10s between commands)
-        self._min_command_interval = 10.0
+        # Blink detection
+        self._signal_was_on = False
+        self._blink_count = 0
+        self._last_blink_time: float = 0
 
     def start(self, cam_id: str):
-        """Start monitoring a camera."""
         if self._running:
             return
         self._running = True
@@ -89,23 +77,21 @@ class GateAutomation:
             target=self._monitor_loop, args=(cam_id,), daemon=True
         )
         self._thread.start()
-        logger.info(f"[GateAuto] Started monitoring camera {cam_id}")
+        logger.info(f"[GateAuto] Started signal detection for camera {cam_id}")
 
     def stop(self):
-        """Stop monitoring."""
         self._running = False
         if self._thread:
             self._thread.join(timeout=5)
         logger.info("[GateAuto] Stopped")
 
     def _grab_frame(self, cam_id: str) -> Optional[np.ndarray]:
-        """Grab a single frame from MJPEG stream."""
         url = f"{self._stream_base_url}/streams/{cam_id}/live"
         try:
             req = urllib.request.Request(url)
             resp = urllib.request.urlopen(req, timeout=5)
             buf = b""
-            while len(buf) < 2_000_000:  # max 2MB
+            while len(buf) < 2_000_000:
                 chunk = resp.read(8192)
                 if not chunk:
                     break
@@ -123,123 +109,79 @@ class GateAutomation:
             logger.debug(f"[GateAuto] Frame grab failed: {e}")
         return None
 
-    def _detect_green_car(self, frame: np.ndarray) -> bool:
-        """Detect green car in parking zone."""
+    def _detect_orange(self, frame: np.ndarray) -> int:
+        """Detect orange pixel count in car front zone."""
         h, w = frame.shape[:2]
-        z = PARKING_ZONE
+        z = CAR_FRONT_ZONE
         zone = frame[
             int(h * z["y1"]) : int(h * z["y2"]),
             int(w * z["x1"]) : int(w * z["x2"]),
         ]
-
         hsv = cv2.cvtColor(zone, cv2.COLOR_BGR2HSV)
-        lower = np.array(GREEN_CAR_HSV["lower"])
-        upper = np.array(GREEN_CAR_HSV["upper"])
-        mask = cv2.inRange(hsv, lower, upper)
-
-        # Morphological cleanup
-        kernel = np.ones((7, 7), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        big = [c for c in contours if cv2.contourArea(c) > MIN_CAR_AREA]
-
-        return len(big) > 0
-
-    def _detect_car_position(self, frame: np.ndarray) -> Optional[tuple]:
-        """Get centroid of detected green car. Returns (cx, cy) or None."""
-        h, w = frame.shape[:2]
-        z = PARKING_ZONE
-        y1, y2 = int(h * z["y1"]), int(h * z["y2"])
-        x1, x2 = int(w * z["x1"]), int(w * z["x2"])
-        zone = frame[y1:y2, x1:x2]
-
-        hsv = cv2.cvtColor(zone, cv2.COLOR_BGR2HSV)
-        lower = np.array(GREEN_CAR_HSV["lower"])
-        upper = np.array(GREEN_CAR_HSV["upper"])
-        mask = cv2.inRange(hsv, lower, upper)
-
-        kernel = np.ones((7, 7), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        big = [c for c in contours if cv2.contourArea(c) > MIN_CAR_AREA]
-
-        if not big:
-            return None
-
-        # Use the largest contour
-        largest = max(big, key=cv2.contourArea)
-        M = cv2.moments(largest)
-        if M["m00"] == 0:
-            return None
-        cx = int(M["m10"] / M["m00"]) + x1
-        cy = int(M["m01"] / M["m00"]) + y1
-        return (cx, cy)
-
-    def _detect_car_moving(self, frame: np.ndarray) -> bool:
-        """Detect if car is moving by tracking centroid shift."""
-        pos = self._detect_car_position(frame)
-        if pos is None:
-            self._last_car_centroid = None
-            self._movement_count = 0
-            return False
-
-        if self._last_car_centroid is None:
-            self._last_car_centroid = pos
-            return False
-
-        dx = abs(pos[0] - self._last_car_centroid[0])
-        dy = abs(pos[1] - self._last_car_centroid[1])
-        distance = (dx * dx + dy * dy) ** 0.5
-
-        self._last_car_centroid = pos
-
-        if distance > CAR_MOVEMENT_THRESHOLD:
-            self._movement_count += 1
-            logger.debug(f"[GateAuto] Car moved {distance:.0f}px (count: {self._movement_count})")
-            return self._movement_count >= CAR_MOVING_CONFIRM_FRAMES
-        else:
-            self._movement_count = max(0, self._movement_count - 1)
-            return False
+        mask = cv2.inRange(hsv, np.array(ORANGE_HSV_LOWER), np.array(ORANGE_HSV_UPPER))
+        return int(np.sum(mask > 0))
 
     def _can_send_command(self) -> bool:
-        """Rate-limit gate commands."""
         if self._last_gate_action is None:
             return True
-        return (time.time() - self._last_gate_action) > self._min_command_interval
+        return (time.time() - self._last_gate_action) > MIN_COMMAND_INTERVAL
 
     def _open_gate(self):
-        """Send open gate command."""
         if not self._can_send_command():
             return
         logger.info("[GateAuto] >>> OPENING GATE <<<")
         try:
             self._on_gate_command(0, "เปิดประตู")
             self._gate_state = GateState.OPEN
-            self._gate_opened_at = time.time()
             self._last_gate_action = time.time()
+            self._last_command_time = time.time()
         except Exception as e:
             logger.error(f"[GateAuto] Failed to open gate: {e}")
 
     def _close_gate(self):
-        """Send close gate command."""
         if not self._can_send_command():
             return
         logger.info("[GateAuto] >>> CLOSING GATE <<<")
         try:
             self._on_gate_command(2, "ปิดประตู")
             self._gate_state = GateState.CLOSED
-            self._gate_opened_at = None
             self._last_gate_action = time.time()
+            self._last_command_time = time.time()
         except Exception as e:
             logger.error(f"[GateAuto] Failed to close gate: {e}")
 
+    def _process_frame(self, now: float, orange_px: int):
+        """Track blink cycles and toggle gate."""
+        signal_on = orange_px > MIN_ORANGE_PIXELS
+
+        # In cooldown
+        if (now - self._last_command_time) < COOLDOWN_SECONDS:
+            self._signal_was_on = signal_on
+            return
+
+        # Clean old blinks
+        if (now - self._last_blink_time) > BLINK_WINDOW_SECONDS:
+            self._blink_count = 0
+
+        # Blink = was ON, now OFF
+        if self._signal_was_on and not signal_on:
+            self._blink_count += 1
+            self._last_blink_time = now
+            logger.info(f"[GateAuto] Blink ✓ count={self._blink_count}")
+
+        self._signal_was_on = signal_on
+
+        # Trigger when enough blinks
+        if self._blink_count >= BLINK_CONFIRM_COUNT:
+            if self._gate_state == GateState.OPEN:
+                self._close_gate()
+            else:
+                self._open_gate()
+            self._blink_count = 0
+
     def _monitor_loop(self, cam_id: str):
-        """Main monitoring loop."""
-        logger.info("[GateAuto] Monitor loop started")
+        logger.info("[GateAuto] Signal detection loop started")
+        log_counter = 0
 
         while self._running:
             try:
@@ -249,64 +191,16 @@ class GateAutomation:
                     continue
 
                 now = time.time()
-                car_detected = self._detect_green_car(frame)
-                car_moving = self._detect_car_moving(frame) if car_detected else False
+                orange_px = self._detect_orange(frame)
+                self._process_frame(now, orange_px)
 
-                # --- State transitions ---
-
-                # Car appeared
-                if car_detected and not self._car_present:
-                    logger.info("[GateAuto] Car detected in parking zone")
-                    self._car_present = True
-                    self._car_gone_since = None
-
-                # Car disappeared
-                if not car_detected and self._car_present:
-                    if self._car_gone_since is None:
-                        self._car_gone_since = now
-                        logger.info("[GateAuto] Car may have left, confirming...")
-                    elif (now - self._car_gone_since) > CAR_GONE_CONFIRM_SECONDS:
-                        logger.info("[GateAuto] Car confirmed GONE from parking zone")
-                        self._car_present = False
-                        self._car_moving = False
-                        self._movement_count = 0
-                elif car_detected:
-                    self._car_gone_since = None
-
-                # Car started moving
-                if car_moving and not self._car_moving:
-                    logger.info("[GateAuto] Car is MOVING — preparing to leave")
-                    self._car_moving = True
-
-                # Car stopped moving
-                if not car_moving and self._car_moving and car_detected:
-                    # Only reset if car has been still for a while
-                    pass  # keep _car_moving true until car leaves
-
-                # --- Actions ---
-
-                # Rule 1: Car moving + gate not open → OPEN
-                if (
-                    self._car_moving
-                    and self._gate_state != GateState.OPEN
-                ):
-                    self._open_gate()
-
-                # Rule 2: Car gone + gate open → CLOSE (after delay)
-                if (
-                    not self._car_present
-                    and self._gate_state == GateState.OPEN
-                    and self._gate_opened_at
-                    and (now - self._gate_opened_at) > GATE_CLOSE_DELAY
-                ):
-                    self._close_gate()
-
-                # Periodic status log (every 10s)
-                if int(now) % 10 == 0:
+                # Periodic log (~10s)
+                log_counter += 1
+                if log_counter >= 40:
+                    log_counter = 0
                     logger.info(
-                        f"[GateAuto] car={self._car_present} "
-                        f"moving={self._car_moving} "
-                        f"gate={self._gate_state.value}"
+                        f"[GateAuto] orange={orange_px} "
+                        f"blinks={self._blink_count} gate={self._gate_state.value}"
                     )
 
             except Exception as e:
@@ -315,10 +209,9 @@ class GateAutomation:
             time.sleep(CHECK_INTERVAL)
 
     def get_status(self) -> dict:
-        """Get current automation status."""
         return {
             "running": self._running,
-            "car_present": self._car_present,
-            "car_moving": self._car_moving,
             "gate_state": self._gate_state.value,
+            "pending_blinks": self._blink_count,
+            "mode": "signal_toggle",
         }
