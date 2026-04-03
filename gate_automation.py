@@ -4,6 +4,7 @@ Monitors the camera for orange blinking (turn signal or hazard):
 - Blink detected while gate closed/unknown → Open gate
 - Blink detected while gate open → Close gate
 """
+import collections
 import cv2
 import numpy as np
 import threading
@@ -26,8 +27,11 @@ CAR_FRONT_ZONE = {
 ORANGE_HSV_LOWER = (5, 100, 150)
 ORANGE_HSV_UPPER = (25, 255, 255)
 
-# Detection
-MIN_ORANGE_PIXELS = 5000       # min orange pixels to count as "signal ON" (real signal = 10k+)
+# Detection — relative threshold (rolling baseline)
+# MIN_ORANGE_PIXELS = 5000     # [deprecated] fixed threshold — replaced by relative baseline
+BASELINE_WINDOW = 40           # rolling average samples (~10s at CHECK_INTERVAL=0.25s)
+SIGNAL_MULTIPLIER = 3.0        # orange must exceed baseline * multiplier to count as signal ON
+MIN_BASELINE = 50              # floor to prevent near-zero baseline triggering false positives
 BLINK_CONFIRM_COUNT = 3        # need 3 blink cycles to confirm (prevent false trigger)
 BLINK_WINDOW_SECONDS = 8.0     # time window to accumulate blinks
 COOLDOWN_SECONDS = 10.0        # cooldown after command sent
@@ -67,6 +71,9 @@ class GateAutomation:
         self._signal_was_on = False
         self._blink_count = 0
         self._last_blink_time: float = 0
+
+        # Rolling baseline for relative threshold
+        self._orange_history: collections.deque = collections.deque(maxlen=BASELINE_WINDOW)
 
     def start(self, cam_id: str):
         if self._running:
@@ -150,9 +157,19 @@ class GateAutomation:
         except Exception as e:
             logger.error(f"[GateAuto] Failed to close gate: {e}")
 
+    def _get_baseline(self) -> float:
+        """Return rolling average of orange pixels, floored by MIN_BASELINE."""
+        if not self._orange_history:
+            return float(MIN_BASELINE)
+        avg = sum(self._orange_history) / len(self._orange_history)
+        return max(avg, float(MIN_BASELINE))
+
     def _process_frame(self, now: float, orange_px: int):
         """Track blink cycles and toggle gate."""
-        signal_on = orange_px > MIN_ORANGE_PIXELS
+        # Update rolling baseline with current reading
+        self._orange_history.append(orange_px)
+        baseline = self._get_baseline()
+        signal_on = orange_px > baseline * SIGNAL_MULTIPLIER
 
         # In cooldown
         if (now - self._last_command_time) < COOLDOWN_SECONDS:
@@ -198,9 +215,12 @@ class GateAutomation:
                 log_counter += 1
                 if log_counter >= 40:
                     log_counter = 0
+                    baseline = self._get_baseline()
+                    ratio = orange_px / baseline if baseline > 0 else 0
                     logger.info(
-                        f"[GateAuto] orange={orange_px} "
-                        f"blinks={self._blink_count} gate={self._gate_state.value}"
+                        f"[GateAuto] orange={orange_px} baseline={baseline:.0f} "
+                        f"ratio={ratio:.1f}x blinks={self._blink_count} "
+                        f"gate={self._gate_state.value}"
                     )
 
             except Exception as e:
@@ -213,5 +233,6 @@ class GateAutomation:
             "running": self._running,
             "gate_state": self._gate_state.value,
             "pending_blinks": self._blink_count,
+            "baseline": round(self._get_baseline()),
             "mode": "signal_toggle",
         }
