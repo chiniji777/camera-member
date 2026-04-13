@@ -222,9 +222,14 @@ def _find_ffmpeg() -> Optional[str]:
     path = shutil.which("ffmpeg")
     if path:
         return path
-    fallback = Path("C:/ffmpeg/ffmpeg-8.0.1-essentials_build/bin/ffmpeg.exe")
-    if fallback.exists():
-        return str(fallback)
+    # Common install locations
+    for fallback in [
+        Path("/opt/homebrew/bin/ffmpeg"),
+        Path("/usr/local/bin/ffmpeg"),
+        Path("C:/ffmpeg/ffmpeg-8.0.1-essentials_build/bin/ffmpeg.exe"),
+    ]:
+        if fallback.exists():
+            return str(fallback)
     return None
 
 
