@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, StreamingResponse, Response
 from pydantic import BaseModel
 from pathlib import Path
 from camera_manager import CameraManager, StreamManager, AudioStreamManager, auto_resolve_cameras
+from ezviz_manager import EzvizTokenManager
 from discovery import discover_onvif_cameras, get_rtsp_url_from_onvif
 from face_manager import FaceManager, FaceDetector
 from smart_home import SmartHomeScanner
@@ -31,6 +32,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 camera_mgr = CameraManager()
+ezviz_mgr = EzvizTokenManager()
 stream_mgr = StreamManager()
 stream_mgr.set_camera_manager(camera_mgr)
 audio_mgr = AudioStreamManager()
@@ -120,7 +122,7 @@ async def lifespan(app: FastAPI):
         logger.info(f"Auto-resolved {resolved} camera IP(s)")
 
     for cam in camera_mgr.list_all():
-        if cam.enabled:
+        if cam.enabled and cam.type != "ezviz":
             stream_mgr.start_stream(cam)
             audio_mgr.start_audio(cam)
     logger.info(f"Loaded {len(camera_mgr.cameras)} camera(s)")
@@ -204,10 +206,15 @@ async def list_cameras():
             "url": cam.url,
             "type": cam.type,
             "enabled": cam.enabled,
-            "stream_url": (
-                f"/streams/{cam.id}/live" if cam.type == "rtsp" else cam.url
-            ),
         }
+        if cam.type == "ezviz":
+            info["stream_url"] = cam.url  # ezopen:// URL
+            info["ezviz_serial"] = cam.ezviz_serial
+            info["ezviz_channel"] = cam.ezviz_channel
+        else:
+            info["stream_url"] = (
+                f"/streams/{cam.id}/live" if cam.type == "rtsp" else cam.url
+            )
         # Expose quality info for cameras with switchable channels
         if cam.type == "rtsp" and "/Streaming/Channels/" in cam.url:
             info["quality"] = "high" if "/Channels/101" in cam.url else "low"
@@ -225,6 +232,123 @@ async def add_camera(req: AddCameraRequest):
         face_detector.add_camera(cam.id)
     logger.info(f"Added camera: {cam.name} ({cam.type}) -> {cam.url}")
     return {"id": cam.id, "name": cam.name}
+
+
+@app.get("/api/cameras/detailed")
+async def list_cameras_detailed():
+    """Return cameras with extra metadata (host, model, ptz) for frontend."""
+    result = []
+    for cam in camera_mgr.list_all():
+        info = {
+            "id": cam.id,
+            "name": cam.name,
+            "type": cam.type,
+            "enabled": cam.enabled,
+            "ptz": False,
+        }
+        if cam.type == "ezviz":
+            info["stream_url"] = cam.url
+            info["ezviz_serial"] = cam.ezviz_serial
+            info["ezviz_channel"] = cam.ezviz_channel
+            info["host"] = ""
+            info["model"] = "EZVIZ C6N"
+            info["ptz"] = True  # C6N has PTZ
+        else:
+            info["stream_url"] = f"/streams/{cam.id}/live" if cam.type == "rtsp" else cam.url
+            info["url"] = cam.url
+            # Parse host from RTSP URL
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(cam.url)
+                info["host"] = parsed.hostname or ""
+            except Exception:
+                info["host"] = ""
+            if cam.type == "rtsp" and "/Streaming/Channels/" in cam.url:
+                info["quality"] = "high" if "/Channels/101" in cam.url else "low"
+                info["can_switch_quality"] = True
+        result.append(info)
+    return result
+
+
+@app.get("/api/ezviz/token")
+async def ezviz_token():
+    """Return a valid EZVIZ access token for EZUIKit player."""
+    token_info = ezviz_mgr.get_token()
+    if not token_info:
+        raise HTTPException(503, "Failed to get EZVIZ token")
+    return token_info
+
+
+class EzvizPtzRequest(BaseModel):
+    direction: str
+    speed: int = 50
+
+
+# Map direction names to EZVIZ PTZ command codes
+EZVIZ_PTZ_MAP = {
+    "up": 0, "down": 1, "left": 2, "right": 3,
+    "left_up": 4, "left_down": 5, "right_up": 6, "right_down": 7,
+}
+
+
+@app.post("/api/cameras/{cam_id}/ptz")
+async def camera_ptz(cam_id: str, req: EzvizPtzRequest):
+    """PTZ control — works for both ONVIF and EZVIZ cameras."""
+    cam = camera_mgr.get(cam_id)
+    if not cam:
+        raise HTTPException(404, "Camera not found")
+
+    if cam.type == "ezviz":
+        token_info = ezviz_mgr.get_token()
+        if not token_info:
+            raise HTTPException(503, "Failed to get EZVIZ token")
+
+        ptz_code = EZVIZ_PTZ_MAP.get(req.direction)
+        if ptz_code is None:
+            raise HTTPException(400, f"Unknown direction: {req.direction}")
+
+        import requests as req_lib
+        resp = req_lib.post(
+            "https://isgpopen.ezvizlife.com/api/lapp/device/ptz/start",
+            data={
+                "accessToken": token_info["accessToken"],
+                "deviceSerial": cam.ezviz_serial,
+                "channelNo": cam.ezviz_channel,
+                "direction": ptz_code,
+                "speed": req.speed,
+            },
+            timeout=10,
+        )
+        return resp.json()
+    else:
+        raise HTTPException(400, "PTZ not supported for this camera type")
+
+
+@app.post("/api/cameras/{cam_id}/ptz/stop")
+async def camera_ptz_stop(cam_id: str):
+    """Stop PTZ movement."""
+    cam = camera_mgr.get(cam_id)
+    if not cam:
+        raise HTTPException(404, "Camera not found")
+
+    if cam.type == "ezviz":
+        token_info = ezviz_mgr.get_token()
+        if not token_info:
+            raise HTTPException(503, "Failed to get EZVIZ token")
+
+        import requests as req_lib
+        resp = req_lib.post(
+            "https://isgpopen.ezvizlife.com/api/lapp/device/ptz/stop",
+            data={
+                "accessToken": token_info["accessToken"],
+                "deviceSerial": cam.ezviz_serial,
+                "channelNo": cam.ezviz_channel,
+            },
+            timeout=10,
+        )
+        return resp.json()
+    else:
+        raise HTTPException(400, "PTZ not supported for this camera type")
 
 
 class GateCommand(BaseModel):

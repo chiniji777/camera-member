@@ -22,9 +22,11 @@ STREAMS_DIR = Path("streams")
 class Camera:
     id: str
     name: str
-    url: str          # RTSP URL or MJPEG agent URL
-    type: str          # "rtsp" or "mjpeg"
+    url: str          # RTSP URL, MJPEG agent URL, or ezopen:// URL
+    type: str          # "rtsp", "mjpeg", or "ezviz"
     enabled: bool = True
+    ezviz_serial: str = ""
+    ezviz_channel: int = 1
 
 
 class CameraManager:
