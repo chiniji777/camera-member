@@ -229,7 +229,7 @@ def _find_ffmpeg() -> Optional[str]:
 
 
 class StreamManager:
-    """Manages FFmpeg processes that decode RTSP to MJPEG frames via pipe."""
+    """Manages FFmpeg processes that decode RTSP/HLS to MJPEG frames via pipe."""
 
     def __init__(self):
         self.processes: dict[str, subprocess.Popen] = {}
@@ -239,6 +239,7 @@ class StreamManager:
         self._frame_locks: dict[str, threading.Lock] = {}
         self._cameras: dict[str, Camera] = {}      # keep ref for restart
         self._camera_mgr: Optional["CameraManager"] = None  # for auto-resolve
+        self._ezviz_mgr = None  # set externally for EZVIZ HLS URL refresh
         self.motion_detector = None  # set externally from server.py
         STREAMS_DIR.mkdir(exist_ok=True)
 
@@ -246,14 +247,57 @@ class StreamManager:
         """Link to CameraManager so we can auto-resolve IPs on reconnect."""
         self._camera_mgr = mgr
 
+    def set_ezviz_manager(self, mgr):
+        """Link to EzvizTokenManager for HLS URL refresh."""
+        self._ezviz_mgr = mgr
+
+    def _get_ezviz_hls_url(self, camera: Camera) -> Optional[str]:
+        """Get a fresh HLS URL for an EZVIZ camera from the cloud API."""
+        if not self._ezviz_mgr:
+            logger.error("EzvizTokenManager not set, cannot get HLS URL")
+            return None
+        token_info = self._ezviz_mgr.get_token()
+        if not token_info:
+            logger.error("Failed to get EZVIZ token for stream")
+            return None
+        import requests as req_lib
+        try:
+            resp = req_lib.post(
+                "https://isgpopen.ezvizlife.com/api/lapp/v2/live/address/get",
+                data={
+                    "accessToken": token_info["accessToken"],
+                    "deviceSerial": camera.ezviz_serial or camera.id,
+                    "channelNo": camera.ezviz_channel or 1,
+                    "protocol": 2,
+                    "quality": 1,
+                },
+                timeout=10,
+            )
+            data = resp.json()
+            if data.get("code") == "200":
+                return data["data"]["url"]
+            logger.error(f"EZVIZ HLS API error: {data.get('msg', 'unknown')}")
+        except Exception as e:
+            logger.error(f"Failed to get EZVIZ HLS URL: {e}")
+        return None
+
     def start_stream(self, camera: Camera):
-        if camera.type != "rtsp":
+        if camera.type not in ("rtsp", "ezviz"):
             return
 
         ffmpeg_path = _find_ffmpeg()
         if not ffmpeg_path:
-            logger.error("FFmpeg not found. Install FFmpeg to use RTSP cameras.")
+            logger.error("FFmpeg not found. Install FFmpeg to use cameras.")
             return
+
+        # For EZVIZ cameras, get HLS URL from cloud API
+        input_url = camera.url
+        if camera.type == "ezviz":
+            hls_url = self._get_ezviz_hls_url(camera)
+            if not hls_url:
+                logger.error(f"Cannot start EZVIZ stream for {camera.name}: no HLS URL")
+                return
+            input_url = hls_url
 
         self._cameras[camera.id] = camera
         self._frame_locks.setdefault(camera.id, threading.Lock())
@@ -262,19 +306,34 @@ class StreamManager:
         stream_dir.mkdir(exist_ok=True)
         ffmpeg_log = stream_dir / "ffmpeg.log"
 
-        cmd = [
-            ffmpeg_path,
-            "-fflags", "nobuffer",
-            "-flags", "low_delay",
-            "-rtsp_transport", "tcp",
-            "-i", camera.url,
-            "-an",
-            "-c:v", "mjpeg",
-            "-q:v", "5",
-            "-f", "image2pipe",
-            "-vf", "fps=10",
-            "pipe:1",
-        ]
+        if camera.type == "rtsp":
+            cmd = [
+                ffmpeg_path,
+                "-fflags", "nobuffer",
+                "-flags", "low_delay",
+                "-rtsp_transport", "tcp",
+                "-i", input_url,
+                "-an",
+                "-c:v", "mjpeg",
+                "-q:v", "5",
+                "-f", "image2pipe",
+                "-vf", "fps=10",
+                "pipe:1",
+            ]
+        else:
+            # EZVIZ HLS input — different flags for HLS
+            cmd = [
+                ffmpeg_path,
+                "-fflags", "nobuffer",
+                "-flags", "low_delay",
+                "-i", input_url,
+                "-an",
+                "-c:v", "mjpeg",
+                "-q:v", "5",
+                "-f", "image2pipe",
+                "-vf", "fps=10",
+                "pipe:1",
+            ]
 
         try:
             log_fh = open(ffmpeg_log, "w")

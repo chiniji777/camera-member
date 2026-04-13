@@ -35,6 +35,7 @@ camera_mgr = CameraManager()
 ezviz_mgr = EzvizTokenManager()
 stream_mgr = StreamManager()
 stream_mgr.set_camera_manager(camera_mgr)
+stream_mgr.set_ezviz_manager(ezviz_mgr)
 audio_mgr = AudioStreamManager()
 face_mgr = FaceManager()
 face_detector = FaceDetector(stream_mgr, face_mgr)
@@ -122,9 +123,10 @@ async def lifespan(app: FastAPI):
         logger.info(f"Auto-resolved {resolved} camera IP(s)")
 
     for cam in camera_mgr.list_all():
-        if cam.enabled and cam.type != "ezviz":
+        if cam.enabled:
             stream_mgr.start_stream(cam)
-            audio_mgr.start_audio(cam)
+            if cam.type == "rtsp":
+                audio_mgr.start_audio(cam)
     logger.info(f"Loaded {len(camera_mgr.cameras)} camera(s)")
 
     # Start face detection on all active cameras
@@ -247,7 +249,7 @@ async def list_cameras_detailed():
             "ptz": False,
         }
         if cam.type == "ezviz":
-            info["stream_url"] = cam.url
+            info["stream_url"] = f"/streams/{cam.id}/live"
             info["ezviz_serial"] = cam.ezviz_serial
             info["ezviz_channel"] = cam.ezviz_channel
             info["host"] = ""
@@ -277,6 +279,36 @@ async def ezviz_token():
     if not token_info:
         raise HTTPException(503, "Failed to get EZVIZ token")
     return token_info
+
+
+@app.get("/api/ezviz/hls/{cam_id}")
+async def ezviz_hls(cam_id: str, quality: int = 1):
+    """Get HLS live stream URL for an EZVIZ camera.
+    quality: 1=fluent, 2=HD, 3=super HD"""
+    cam = camera_mgr.get(cam_id)
+    if not cam or cam.type != "ezviz":
+        raise HTTPException(404, "EZVIZ camera not found")
+
+    token_info = ezviz_mgr.get_token()
+    if not token_info:
+        raise HTTPException(503, "Failed to get EZVIZ token")
+
+    import requests as req_lib
+    resp = req_lib.post(
+        "https://isgpopen.ezvizlife.com/api/lapp/v2/live/address/get",
+        data={
+            "accessToken": token_info["accessToken"],
+            "deviceSerial": cam.ezviz_serial or cam_id,
+            "channelNo": cam.ezviz_channel or 1,
+            "protocol": 2,
+            "quality": quality,
+        },
+        timeout=10,
+    )
+    data = resp.json()
+    if data.get("code") != "200":
+        raise HTTPException(502, f"EZVIZ API error: {data.get('msg', 'unknown')}")
+    return {"url": data["data"]["url"], "expireTime": data["data"].get("expireTime")}
 
 
 class EzvizPtzRequest(BaseModel):
