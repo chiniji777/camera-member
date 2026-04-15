@@ -256,34 +256,39 @@ class StreamManager:
         """Link to EzvizTokenManager for HLS URL refresh."""
         self._ezviz_mgr = mgr
 
-    def _get_ezviz_hls_url(self, camera: Camera) -> Optional[str]:
-        """Get a fresh HLS URL for an EZVIZ camera from the cloud API."""
+    def _get_ezviz_stream_url(self, camera: Camera) -> Optional[str]:
+        """Get a fresh stream URL for an EZVIZ camera from the cloud API.
+        Tries FLV (protocol=4) first for continuous streaming,
+        falls back to HLS (protocol=2) if FLV unavailable."""
         if not self._ezviz_mgr:
-            logger.error("EzvizTokenManager not set, cannot get HLS URL")
+            logger.error("EzvizTokenManager not set, cannot get stream URL")
             return None
         token_info = self._ezviz_mgr.get_token()
         if not token_info:
             logger.error("Failed to get EZVIZ token for stream")
             return None
         import requests as req_lib
-        try:
-            resp = req_lib.post(
-                "https://isgpopen.ezvizlife.com/api/lapp/v2/live/address/get",
-                data={
-                    "accessToken": token_info["accessToken"],
-                    "deviceSerial": camera.ezviz_serial or camera.id,
-                    "channelNo": camera.ezviz_channel or 1,
-                    "protocol": 2,
-                    "quality": 1,
-                },
-                timeout=10,
-            )
-            data = resp.json()
-            if data.get("code") == "200":
-                return data["data"]["url"]
-            logger.error(f"EZVIZ HLS API error: {data.get('msg', 'unknown')}")
-        except Exception as e:
-            logger.error(f"Failed to get EZVIZ HLS URL: {e}")
+        for protocol, name in [(4, "FLV"), (2, "HLS")]:
+            try:
+                resp = req_lib.post(
+                    "https://isgpopen.ezvizlife.com/api/lapp/v2/live/address/get",
+                    data={
+                        "accessToken": token_info["accessToken"],
+                        "deviceSerial": camera.ezviz_serial or camera.id,
+                        "channelNo": camera.ezviz_channel or 1,
+                        "protocol": protocol,
+                        "quality": 1,
+                    },
+                    timeout=10,
+                )
+                data = resp.json()
+                if data.get("code") == "200":
+                    url = data["data"]["url"]
+                    logger.info(f"EZVIZ {name} URL obtained for {camera.name}")
+                    return url
+                logger.warning(f"EZVIZ {name} unavailable: {data.get('msg')}")
+            except Exception as e:
+                logger.warning(f"EZVIZ {name} request failed: {e}")
         return None
 
     def start_stream(self, camera: Camera):
@@ -295,14 +300,14 @@ class StreamManager:
             logger.error("FFmpeg not found. Install FFmpeg to use cameras.")
             return
 
-        # For EZVIZ cameras, get HLS URL from cloud API
+        # For EZVIZ cameras, get stream URL from cloud API (FLV preferred)
         input_url = camera.url
         if camera.type == "ezviz":
-            hls_url = self._get_ezviz_hls_url(camera)
-            if not hls_url:
-                logger.error(f"Cannot start EZVIZ stream for {camera.name}: no HLS URL")
+            stream_url = self._get_ezviz_stream_url(camera)
+            if not stream_url:
+                logger.error(f"Cannot start EZVIZ stream for {camera.name}: no stream URL")
                 return
-            input_url = hls_url
+            input_url = stream_url
 
         self._cameras[camera.id] = camera
         self._frame_locks.setdefault(camera.id, threading.Lock())
@@ -326,11 +331,13 @@ class StreamManager:
                 "pipe:1",
             ]
         else:
-            # EZVIZ HLS input — different flags for HLS
+            # EZVIZ FLV/HLS input — optimized for continuous streaming
             cmd = [
                 ffmpeg_path,
-                "-fflags", "nobuffer",
+                "-fflags", "nobuffer+discardcorrupt",
                 "-flags", "low_delay",
+                "-probesize", "32768",
+                "-analyzeduration", "0",
                 "-i", input_url,
                 "-an",
                 "-c:v", "mjpeg",
