@@ -24,6 +24,7 @@ from layout_manager import LayoutManager
 from motion_detector import MotionDetector
 from self_learn import SelfLearnPipeline
 from gate_automation import GateAutomation
+from hls_recorder import HLSRecorder
 
 logging.basicConfig(
     level=logging.INFO,
@@ -113,6 +114,7 @@ def _send_gate_command(channel: int, label: str):
 
 
 gate_auto = GateAutomation(on_gate_command=_send_gate_command)
+hls_recorders: dict[str, HLSRecorder] = {}
 
 
 @asynccontextmanager
@@ -146,8 +148,33 @@ async def lifespan(app: FastAPI):
             gate_auto.start(cam.id)
             break
 
+    # Start HLS recorder for every RTSP camera
+    for cam in camera_mgr.list_all():
+        if cam.enabled and cam.type == "rtsp":
+            rec = HLSRecorder(cam.id, cam.url)
+            await rec.start()
+            hls_recorders[cam.id] = rec
+            # Initial cleanup pass
+            rec.cleanup_old(keep_days=7)
+    if hls_recorders:
+        logger.info(f"HLS recorders started: {list(hls_recorders)}")
+
+        async def _cleanup_loop():
+            while True:
+                await asyncio.sleep(3600)
+                for rec in hls_recorders.values():
+                    try:
+                        rec.cleanup_old(keep_days=7)
+                    except Exception as e:
+                        logger.warning(f"hls cleanup error: {e}")
+        app.state._cleanup_task = asyncio.create_task(_cleanup_loop())
+
     yield
 
+    for rec in hls_recorders.values():
+        await rec.stop()
+    if hasattr(app.state, "_cleanup_task"):
+        app.state._cleanup_task.cancel()
     gate_auto.stop()
     face_detector.stop()
     stream_mgr.stop_all()
@@ -906,6 +933,67 @@ async def index():
     return {"message": "Web UI not found. Place index.html in static/"}
 
 
+from fastapi.responses import PlainTextResponse
+from datetime import datetime, timezone
+
+
+@app.get("/streams/{cam_id}/hls/live.m3u8")
+async def hls_live(cam_id: str):
+    rec = hls_recorders.get(cam_id)
+    if not rec:
+        raise HTTPException(404, "recorder not running")
+    body = rec.live_m3u8(window_seconds=36)
+    if not body:
+        raise HTTPException(503, "no segments yet")
+    return Response(body, media_type="application/vnd.apple.mpegurl",
+                    headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/streams/{cam_id}/hls/archive.m3u8")
+async def hls_archive(cam_id: str, since: Optional[float] = None, until: Optional[float] = None):
+    rec = hls_recorders.get(cam_id)
+    if not rec:
+        raise HTTPException(404, "recorder not running")
+    s = datetime.fromtimestamp(since, tz=timezone.utc) if since else None
+    u = datetime.fromtimestamp(until, tz=timezone.utc) if until else None
+    body = rec.archive_m3u8(since=s, until=u)
+    if not body:
+        raise HTTPException(503, "no segments")
+    return Response(body, media_type="application/vnd.apple.mpegurl",
+                    headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/streams/{cam_id}/hls/info")
+async def hls_info(cam_id: str):
+    rec = hls_recorders.get(cam_id)
+    if not rec:
+        raise HTTPException(404, "recorder not running")
+    segs = rec.list_segments()
+    if not segs:
+        return {"segments": 0, "oldest": None, "newest": None, "size_mb": 0}
+    sizes = sum(p.stat().st_size for p, _, _ in segs)
+    return {
+        "segments": len(segs),
+        "oldest": segs[0][1],
+        "newest": segs[-1][1],
+        "size_mb": round(sizes / 1024 / 1024, 2),
+    }
+
+
+@app.get("/streams/{cam_id}/hls/{segment}")
+async def hls_segment(cam_id: str, segment: str):
+    if not segment.endswith(".ts") or "/" in segment or ".." in segment:
+        raise HTTPException(400, "bad segment name")
+    rec = hls_recorders.get(cam_id)
+    if not rec:
+        raise HTTPException(404, "recorder not running")
+    p = rec.seg_dir / segment
+    if not p.exists():
+        raise HTTPException(404, "segment not found")
+    return FileResponse(p, media_type="video/mp2t",
+                        headers={"Cache-Control": "public, max-age=300"})
+
+
 if __name__ == "__main__":
     import socket
     def _get_lan_ip():
@@ -927,3 +1015,7 @@ if __name__ == "__main__":
     print("  Share the Network URL with others on your LAN")
     print("=" * 50)
     uvicorn.run(app, host="0.0.0.0", port=8080)
+
+
+# ---------- HLS recording endpoints ----------
+
